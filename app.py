@@ -14,14 +14,18 @@ st.set_page_config(page_title="Ultimate Quant Bot", page_icon="📈", layout="wi
 st.title("🤖 Borsa Analiz ve Karar Robotu v2.0")
 st.markdown("Bu sistem, hisseleri teknik ve temel olarak inceler, dinamik al/sat hedefleri belirler.")
 
-# --- 1. GÜVENLİK: ŞİFRE KORUMASI (Secrets Kullanımı) ---
-# .streamlit/secrets.toml dosyasından şifreyi çeker. 
-# Eğer dosya yoksa hata vermemesi için "mozan@2006" varsayılan bırakıldı.
-beklenen_sifre = st.secrets.get("sistem_sifresi", "mozan@2006")
+# --- 1. GÜVENLİK: TAMAMEN GİZLİ ŞİFRE KORUMASI ---
+# Şifre artık kodun içinde yazmıyor, sadece Streamlit Secrets üzerinden çekiliyor.
+try:
+    beklenen_sifre = st.secrets["sistem_sifresi"]
+except KeyError:
+    st.error("🚨 Sistem Hatası: Şifre ayarlanmamış! Lütfen Streamlit Cloud üzerinden 'Secrets' bölümüne 'sistem_sifresi' değerini ekleyin.")
+    st.stop()
+
 girilen_sifre = st.sidebar.text_input("Sisteme Giriş Şifresi:", type="password")
 
 if girilen_sifre != beklenen_sifre:
-    st.sidebar.warning("Sistemi kullanmak için şifre girmelisiniz.")
+    st.sidebar.warning("Sistemi kullanmak için doğru şifreyi girmelisiniz.")
     st.stop()
 
 st.sidebar.success("Giriş Başarılı! ✅")
@@ -108,7 +112,7 @@ def nihai_analiz(hisse_kodu):
         
     try:
         veri = gostergeleri_hesapla(veri)
-        if veri.empty: return None # Dropna sonrası veri kalmadıysa çık
+        if veri.empty: return None 
             
         son_durum = veri.iloc[-1]
         fiyat = float(son_durum['Close'])
