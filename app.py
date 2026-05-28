@@ -5,13 +5,12 @@ import ta
 import warnings
 import logging
 import plotly.graph_objects as go
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v3.0", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v3.1", page_icon="📈", layout="wide")
 
 # --- 1. YAPILANDIRMA SINIFI (CONFIG) ---
 class BotConfig:
@@ -28,18 +27,16 @@ class DataFetcher:
     @staticmethod
     def veri_indir(hisse_kodu):
         try:
-            # Çoklu Zaman Dilimi: Hem günlük hem haftalık veri çekiyoruz
-            gunluk_veri = yf.download(hisse_kodu, period="2y", interval="1d", progress=False)
-            haftalik_veri = yf.download(hisse_kodu, period="2y", interval="1wk", progress=False)
+            ticker = yf.Ticker(hisse_kodu)
+            # history() metodu, download'a göre daha stabil çalışır ve MultiIndex sorunu yaratmaz.
+            # Haftalık veriyi 5 yıllık çekiyoruz ki SMA_50 sorunsuz hesaplansın.
+            gunluk_veri = ticker.history(period="2y", interval="1d")
+            haftalik_veri = ticker.history(period="5y", interval="1wk")
             
-            if gunluk_veri.empty or len(gunluk_veri) < 50: 
+            if gunluk_veri.empty or haftalik_veri.empty or len(haftalik_veri) < 50: 
                 return None, None, None
-                
-            if isinstance(gunluk_veri.columns, pd.MultiIndex): 
-                gunluk_veri.columns = gunluk_veri.columns.droplevel(1)
-                haftalik_veri.columns = haftalik_veri.columns.droplevel(1)
             
-            info = yf.Ticker(hisse_kodu).info
+            info = ticker.info
             fk = info.get('trailingPE', None)
             
             return gunluk_veri, haftalik_veri, fk
@@ -50,27 +47,33 @@ class DataFetcher:
 # --- 3. TEKNİK ANALİZ SINIFI ---
 class TechnicalAnalyzer:
     @staticmethod
-    def gostergeleri_hesapla(veri):
+    def gostergeleri_hesapla(veri, periyot="gunluk"):
         df = veri.copy()
         kapanis = df['Close']
         hacim = df['Volume']
         yuksek = df['High']
         dusuk = df['Low']
         
-        df['RSI'] = ta.momentum.RSIIndicator(close=kapanis, window=14).rsi()
-        macd = ta.trend.MACD(close=kapanis)
-        df['MACD_Line'] = macd.macd()
-        df['MACD_Signal'] = macd.macd_signal()
-        df['SMA_200'] = ta.trend.SMAIndicator(close=kapanis, window=200).sma_indicator()
-        df['SMA_50'] = ta.trend.SMAIndicator(close=kapanis, window=50).sma_indicator()
-        df['SMA_20'] = ta.trend.SMAIndicator(close=kapanis, window=20).sma_indicator()
+        # Haftalık periyotta sadece ana trend analizi yapıyoruz
+        if periyot == "haftalik":
+            df['SMA_50'] = ta.trend.SMAIndicator(close=kapanis, window=50).sma_indicator()
         
-        atr_ind = ta.volatility.AverageTrueRange(high=yuksek, low=dusuk, close=kapanis, window=14)
-        df['ATR'] = atr_ind.average_true_range()
-        df['Hacim_Ort_20'] = hacim.rolling(window=20).mean()
-        
-        bollinger = ta.volatility.BollingerBands(close=kapanis, window=20, window_dev=2)
-        df['BB_Alt'] = bollinger.bollinger_lband()
+        # Günlük periyotta detaylı al-sat indikatörleri hesaplanıyor
+        elif periyot == "gunluk":
+            df['RSI'] = ta.momentum.RSIIndicator(close=kapanis, window=14).rsi()
+            macd = ta.trend.MACD(close=kapanis)
+            df['MACD_Line'] = macd.macd()
+            df['MACD_Signal'] = macd.macd_signal()
+            df['SMA_200'] = ta.trend.SMAIndicator(close=kapanis, window=200).sma_indicator()
+            df['SMA_50'] = ta.trend.SMAIndicator(close=kapanis, window=50).sma_indicator()
+            df['SMA_20'] = ta.trend.SMAIndicator(close=kapanis, window=20).sma_indicator()
+            
+            atr_ind = ta.volatility.AverageTrueRange(high=yuksek, low=dusuk, close=kapanis, window=14)
+            df['ATR'] = atr_ind.average_true_range()
+            df['Hacim_Ort_20'] = hacim.rolling(window=20).mean()
+            
+            bollinger = ta.volatility.BollingerBands(close=kapanis, window=20, window_dev=2)
+            df['BB_Alt'] = bollinger.bollinger_lband()
         
         df.dropna(inplace=True)
         return df
@@ -81,7 +84,6 @@ class QuantStrategy:
         self.config = config
 
     def pozisyon_buyuklugu_hesapla(self, fiyat, stop_loss):
-        # Risk = Sermaye * Risk Oranı
         risk_miktari = self.config.sermaye * self.config.risk_orani
         hisse_basina_risk = fiyat - stop_loss
         
@@ -91,10 +93,10 @@ class QuantStrategy:
 
     def analiz_et(self, hisse_kodu):
         gunluk, haftalik, fk_orani = DataFetcher.veri_indir(hisse_kodu)
-        if gunluk is None: return None
+        if gunluk is None or haftalik is None: return None
             
-        gunluk = TechnicalAnalyzer.gostergeleri_hesapla(gunluk)
-        haftalik = TechnicalAnalyzer.gostergeleri_hesapla(haftalik)
+        gunluk = TechnicalAnalyzer.gostergeleri_hesapla(gunluk, periyot="gunluk")
+        haftalik = TechnicalAnalyzer.gostergeleri_hesapla(haftalik, periyot="haftalik")
         
         if gunluk.empty or haftalik.empty: return None 
             
@@ -114,20 +116,20 @@ class QuantStrategy:
         # Çoklu Zaman Dilimi Kontrolü (Haftalık Trend)
         if son_haftalik['Close'] > son_haftalik['SMA_50']:
             skor += 25
-            nedenler.append("Haftalık Ana Trend Yükselişte")
+            nedenler.append("Haftalık Trend Yükselişte")
         else:
-            nedenler.append("Haftalık Trend Düşüşte (Zayıf)")
+            nedenler.append("Haftalık Trend Düşüşte")
 
         # Günlük Kriterler
         if fiyat > son_gunluk['SMA_200']: skor += 15; nedenler.append("200G Ort. Üzerinde")
-        if rsi < self.config.rsi_al: skor += 20; nedenler.append("RSI Aşırı Satım (Ucuz)")
+        if rsi < self.config.rsi_al: skor += 20; nedenler.append("RSI Aşırı Satım")
         if son_gunluk['MACD_Line'] > son_gunluk['MACD_Signal']: skor += 15; nedenler.append("MACD Alımda")
         if son_gunluk['Volume'] > son_gunluk['Hacim_Ort_20']: skor += 15; nedenler.append("Hacim Artışı")
-        if fiyat <= son_gunluk['BB_Alt'] * 1.02: skor += 10; nedenler.append("Bollinger Alt Bant")
+        if fiyat <= son_gunluk['BB_Alt'] * 1.02: skor += 10; nedenler.append("BB Alt Bant")
         
         # Temel Analiz Filtresi
         if fk_orani:
-            if fk_orani > 50: skor -= 15; nedenler.append("Pahalı (Yüksek F/K)")
+            if fk_orani > 50: skor -= 15; nedenler.append("Pahalı (F/K Yüksek)")
             elif fk_orani < 0: skor -= 25; nedenler.append("Zarar Ediyor")
                 
         skor = max(0, skor)
@@ -154,13 +156,14 @@ class QuantStrategy:
 
 # --- 5. ARAYÜZ (UI) MANTIK ---
 def ui_olustur():
-    st.title("🤖 Profesyonel Quant Bot v3.0")
-    st.markdown("Çoklu zaman dilimi, nesne yönelimli mimari ve dinamik risk yönetimi ile güçlendirilmiş versiyon.")
+    st.title("🤖 Profesyonel Quant Bot v3.1")
+    st.markdown("Hız sınırlarına takılmayan asenkron analiz, çoklu zaman dilimi ve OOP mimarisi.")
 
+    # ŞİFRE KONTROLÜ (Streamlit Cloud için)
     try:
         beklenen_sifre = st.secrets["sistem_sifresi"]
     except KeyError:
-        st.error("🚨 Sistem Hatası: Şifre ayarlanmamış! (Streamlit Secrets)")
+        st.error("🚨 Sistem Hatası: Şifre ayarlanmamış! Streamlit Settings -> Secrets bölümüne 'sistem_sifresi' ekleyin.")
         st.stop()
 
     girilen_sifre = st.sidebar.text_input("Sisteme Giriş Şifresi:", type="password")
@@ -189,41 +192,52 @@ def ui_olustur():
     if st.sidebar.button("🚀 Analizi Başlat"):
         hisse_listesi = [h.strip().upper() + ".IS" for h in hisseler_metin.split("\n") if h.strip()]
         
-        with st.spinner('Piyasa verileri asenkron olarak çekiliyor (Günlük & Haftalık)...'):
-            sonuclar = []
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                gelecek_sonuclar = {executor.submit(strateji.analiz_et, hisse): hisse for hisse in hisse_listesi}
-                for future in as_completed(gelecek_sonuclar):
-                    analiz = future.result()
-                    if analiz: sonuclar.append(analiz)
+        st.info("Piyasa verileri analiz ediliyor, lütfen bekleyin...")
+        ilerleme_cubugu = st.progress(0)
+        durum_metni = st.empty()
+        
+        sonuclar = []
+        toplam_hisse = len(hisse_listesi)
+        
+        # Yahoo IP engeline takılmamak için döngüsel (sequential) işlem
+        for i, hisse in enumerate(hisse_listesi):
+            durum_metni.text(f"Analiz ediliyor: {hisse} ({i+1}/{toplam_hisse})")
             
-            if sonuclar:
-                df = pd.DataFrame(sonuclar)
-                df['Saf Skor'] = df['Skor'].apply(lambda x: int(x.replace('%', '')))
-                df = df.sort_values(by='Saf Skor', ascending=False).drop(columns=['Saf Skor'])
+            analiz = strateji.analiz_et(hisse)
+            if analiz:
+                sonuclar.append(analiz)
                 
-                st.success("✅ Analiz ve Risk Hesaplamaları Tamamlandı!")
+            ilerleme_cubugu.progress((i + 1) / toplam_hisse)
+        
+        durum_metni.empty() # Bitince metni temizle
+        
+        if sonuclar:
+            df = pd.DataFrame(sonuclar)
+            df['Saf Skor'] = df['Skor'].apply(lambda x: int(x.replace('%', '')))
+            df = df.sort_values(by='Saf Skor', ascending=False).drop(columns=['Saf Skor'])
+            
+            st.success("✅ Analiz ve Risk Hesaplamaları Tamamlandı!")
+            
+            def tabloyu_renklendir(val):
+                if "🔥 KESİN AL" in str(val): return 'background-color: #1e4620; color: white; font-weight: bold;'
+                elif "🟢 POTANSİYEL AL" in str(val): return 'background-color: #2e7d32; color: white;'
+                elif "🔴 SAT" in str(val): return 'background-color: #b71c1c; color: white;'
+                return ''
                 
-                def tabloyu_renklendir(val):
-                    if "🔥 KESİN AL" in str(val): return 'background-color: #1e4620; color: white; font-weight: bold;'
-                    elif "🟢 POTANSİYEL AL" in str(val): return 'background-color: #2e7d32; color: white;'
-                    elif "🔴 SAT" in str(val): return 'background-color: #b71c1c; color: white;'
-                    return ''
-                    
-                st.dataframe(df.style.map(tabloyu_renklendir, subset=['Karar']), use_container_width=True)
-                
-                st.markdown("---")
-                st.markdown("### 📈 Hızlı Grafik İzleme")
-                secilen_hisse = st.selectbox("Detayını görmek istediğiniz hisseyi seçin:", df["Hisse"].tolist())
-                if secilen_hisse:
-                    veri, _, _ = DataFetcher.veri_indir(secilen_hisse + ".IS")
-                    if veri is not None:
-                        veri = veri.tail(120)
-                        fig = go.Figure(data=[go.Candlestick(x=veri.index, open=veri['Open'], high=veri['High'], low=veri['Low'], close=veri['Close'], name="Fiyat")])
-                        fig.update_layout(title=f"{secilen_hisse} - Son 120 Gün", template="plotly_dark", margin=dict(l=0, r=0, t=40, b=0))
-                        st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.error("Veri çekilemedi veya API limitine takılındı.")
+            st.dataframe(df.style.map(tabloyu_renklendir, subset=['Karar']), use_container_width=True)
+            
+            st.markdown("---")
+            st.markdown("### 📈 Hızlı Grafik İzleme")
+            secilen_hisse = st.selectbox("Detayını görmek istediğiniz hisseyi seçin:", df["Hisse"].tolist())
+            if secilen_hisse:
+                veri, _, _ = DataFetcher.veri_indir(secilen_hisse + ".IS")
+                if veri is not None:
+                    veri = veri.tail(120)
+                    fig = go.Figure(data=[go.Candlestick(x=veri.index, open=veri['Open'], high=veri['High'], low=veri['Low'], close=veri['Close'], name="Fiyat")])
+                    fig.update_layout(title=f"{secilen_hisse} - Son 120 Gün", template="plotly_dark", margin=dict(l=0, r=0, t=40, b=0))
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.error("Veri çekilemedi. Bağlantı sorunu olabilir veya hisseler çok yeni olabilir.")
 
 if __name__ == "__main__":
     ui_olustur()
