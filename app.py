@@ -73,7 +73,7 @@ def nihai_analiz(hisse_kodu):
         return None
 
 # --- KULLANICI ARAYÜZÜ ---
-varsayilan_hisseler = "THYAO\nASELS\nTUPRS\nISCTR\nKCHOL\nSISE\nBIMAS"
+varsayilan_hisseler = "THYAO\nASELS\nTUPRS\nISCTR\nKCHOL\nSISE\nBIMAS\nAKSA\ENKAI\"
 hisseler_metin = st.sidebar.text_area("Hisse Kodlarını Alt Alta Yazın:", varsayilan_hisseler, height=200)
 
 if st.sidebar.button("🚀 Analizi Başlat"):
