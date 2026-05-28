@@ -15,7 +15,7 @@ st.markdown("Bu sistem, hisseleri teknik olarak inceler ve dinamik al/sat hedefl
 # Güvenlik Şifresi (Buradaki "1234" yazan yeri kendi şifrenle değiştirebilirsin)
 girilen_sifre = st.sidebar.text_input("Sisteme Giriş Şifresi:", type="password")
 
-if girilen_sifre != "1234":
+if girilen_sifre != "mozan@2006":
     st.sidebar.warning("Sistemi kullanmak için şifre girmelisiniz.")
     st.stop() # Şifre yanlışsa kodun aşağısını çalıştırmaz, sistemi kilitler.
 
