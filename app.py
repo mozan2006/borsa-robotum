@@ -323,4 +323,11 @@ def ui_olustur():
                         <hr style="border-color: #4caf50;">
                         <p style="font-size: 14px;"><b>Yapay Zeka:</b> {firsat['AI Tahmini']}</p>
                         <p style="font-size: 14px;"><b>Win Rate:</b> {firsat['Win Rate']}</p>
-                        <p style="font-size: 12px; color: #a5d6a
+                        <p style="font-size: 12px; color: #a5d6a7;"><i>{firsat['Nedenler']}</i></p>
+                    </div>
+                    """, unsafe_allow_html=True)
+        else:
+            st.warning("Şu anki piyasa koşullarında BIST 30 içinde radara takılan bir 'Güçlü Al' fırsatı bulunamadı.")
+
+if __name__ == "__main__":
+    ui_olustur()
