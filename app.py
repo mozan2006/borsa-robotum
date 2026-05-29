@@ -255,15 +255,16 @@ def ui_olustur():
     st.title("🛡️ Hedge Fon Modu: Quant Bot v5.0")
     st.markdown("Piyasa filtresi, Smart Money (CMF/VWAP), Z-Skoru, ADX, Temel Analiz ve Tarihsel Backtest entegreli sistem.")
 
-    # ŞİFRE KONTROLÜ (Geliştirme için geçici kapalı/açık)
+    # ŞİFRE KONTROLÜ (Streamlit Cloud için)
     try:
-        beklenen_sifre = st.secrets.get("sistem_sifresi", "admin123")
-    except:
-        beklenen_sifre = "admin123"
+        beklenen_sifre = st.secrets["sistem_sifresi"]
+    except KeyError:
+        st.error("🚨 Sistem Hatası: Şifre ayarlanmamış! Streamlit Settings -> Secrets bölümüne 'sistem_sifresi' ekleyin.")
+        st.stop()
 
     girilen_sifre = st.sidebar.text_input("Sisteme Giriş Şifresi:", type="password")
     if girilen_sifre != beklenen_sifre:
-        st.sidebar.warning("Sistemi kullanmak için doğru şifreyi girmelisiniz. (Varsayılan: admin123)")
+        st.sidebar.warning("Sistemi kullanmak için doğru şifreyi girmelisiniz.")
         st.stop()
     st.sidebar.success("Giriş Başarılı! ✅")
 
