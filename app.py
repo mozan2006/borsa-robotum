@@ -294,3 +294,52 @@ def ui_olustur():
 
 if __name__ == "__main__":
     ui_olustur()
+        # --- YENİ EKLENEN: OTOMATİK FIRSAT RADARI ---
+    st.markdown("---")
+    st.markdown("### 📡 Otomatik Fırsat Radarı (BIST 30)")
+    st.markdown("Sistem arka planda ana tahtaları tarar ve sadece **🔥 KESİN AL (Skor >= %80)** seviyesine ulaşanları aşağıya düşürür.")
+
+    if st.button("🔍 Radarı Çalıştır (BIST 30)", use_container_width=True):
+        # BIST 30 Hisseleri (Dilersen BIST 50'ye genişletebilirsin)
+        bist30_hisseler = [
+            "AKBNK.IS", "ARCLK.IS", "ASELS.IS", "BIMAS.IS", "EKGYO.IS", "ENKAI.IS", 
+            "EREGL.IS", "FROTO.IS", "GARAN.IS", "GUBRF.IS", "HEKTS.IS", "ISCTR.IS", 
+            "KCHOL.IS", "KOZAA.IS", "KOZAL.IS", "KRDMD.IS", "PETKM.IS", "PGSUS.IS", 
+            "SAHOL.IS", "SASA.IS", "SISE.IS", "TAVHL.IS", "TCELL.IS", "THYAO.IS", 
+            "TKFEN.IS", "TOASO.IS", "TSKB.IS", "TTKOM.IS", "TUPRS.IS", "YKBNK.IS"
+        ]
+        
+        st.info("BIST 30 hisseleri taranıyor, bu işlem yaklaşık 1-2 dakika sürebilir...")
+        radar_ilerleme = st.progress(0)
+        bulunan_firsatlar = []
+        
+        for i, hisse in enumerate(bist30_hisseler):
+            sonuc = strateji.analiz_et(hisse)
+            # Sadece KESİN AL veya Skoru 80 ve üzeri olanları radara al
+            if sonuc and ("KESİN AL" in sonuc["Karar"] or int(sonuc["Skor"].replace("%", "")) >= 80):
+                bulunan_firsatlar.append(sonuc)
+            radar_ilerleme.progress((i + 1) / len(bist30_hisseler))
+            
+        radar_ilerleme.empty()
+        
+        if bulunan_firsatlar:
+            st.success(f"🚨 Ekrana Düşen Fırsatlar: {len(bulunan_firsatlar)} Adet 'Güçlü Al' Sinyali Yakalandı!")
+            
+            # Fırsatları yan yana şık kutular (card) içinde göster
+            sutunlar = st.columns(min(len(bulunan_firsatlar), 4)) # Maksimum 4 sütun yan yana
+            for idx, firsat in enumerate(bulunan_firsatlar):
+                with sutunlar[idx % 4]:
+                    st.markdown(f"""
+                    <div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: #1e4620; color: white;">
+                        <h2 style="text-align: center; color: #4caf50; margin-top: 0;">{firsat['Hisse']}</h2>
+                        <h1 style="text-align: center; margin: 0;">{firsat['Skor']}</h1>
+                        <p style="text-align: center; font-size: 18px;"><b>{firsat['Fiyat (₺)']} ₺</b></p>
+                        <hr style="border-color: #4caf50;">
+                        <p style="font-size: 14px;"><b>Yapay Zeka:</b> {firsat['AI Tahmini']}</p>
+                        <p style="font-size: 14px;"><b>Win Rate:</b> {firsat['Win Rate']}</p>
+                        <p style="font-size: 12px; color: #a5d6a7;"><i>{firsat['Nedenler']}</i></p>
+                    </div>
+                    """, unsafe_allow_html=True)
+        else:
+            st.warning("Şu anki piyasa koşullarında radara takılan bir fırsat bulunamadı. Endeks düşüşte olabilir veya hisseler aşırı şişmiş olabilir.")
+
