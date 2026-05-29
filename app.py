@@ -5,13 +5,13 @@ import ta
 import warnings
 import logging
 import plotly.graph_objects as go
-import itertools
+import numpy as np
 
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v4.0", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v5.0", page_icon="📈", layout="wide")
 
 # --- 1. YAPILANDIRMA ---
 class BotConfig:
@@ -35,10 +35,15 @@ class DataFetcher:
             if gunluk_veri.empty or haftalik_veri.empty or len(haftalik_veri) < 50: 
                 return None, None, None
             
+            # YENİ: Genişletilmiş Temel Analiz Verileri
             info = ticker.info
-            fk = info.get('trailingPE', None)
+            temel_veriler = {
+                'fk': info.get('trailingPE', None),
+                'pd_dd': info.get('priceToBook', None),
+                'roe': info.get('returnOnEquity', None)
+            }
             
-            return gunluk_veri, haftalik_veri, fk
+            return gunluk_veri, haftalik_veri, temel_veriler
         except Exception as e:
             logging.error(f"Veri çekme hatası ({hisse_kodu}): {e}")
             return None, None, None
@@ -58,7 +63,7 @@ class DataFetcher:
         except:
             return "BİLİNMİYOR ⚪", 0, 0
 
-# --- 3. TEKNİK ANALİZ (VWAP Eklendi) ---
+# --- 3. TEKNİK ANALİZ ---
 class TechnicalAnalyzer:
     @staticmethod
     def gostergeleri_hesapla(veri, periyot="gunluk"):
@@ -72,6 +77,7 @@ class TechnicalAnalyzer:
             df['SMA_50'] = ta.trend.SMAIndicator(close=kapanis, window=50).sma_indicator()
             
         elif periyot == "gunluk":
+            # Temel Göstergeler
             df['RSI'] = ta.momentum.RSIIndicator(close=kapanis, window=14).rsi()
             macd = ta.trend.MACD(close=kapanis)
             df['MACD_Line'] = macd.macd()
@@ -80,50 +86,100 @@ class TechnicalAnalyzer:
             df['SMA_50'] = ta.trend.SMAIndicator(close=kapanis, window=50).sma_indicator()
             df['SMA_20'] = ta.trend.SMAIndicator(close=kapanis, window=20).sma_indicator()
             
-            atr_ind = ta.volatility.AverageTrueRange(high=yuksek, low=dusuk, close=kapanis, window=14)
-            df['ATR'] = atr_ind.average_true_range()
+            # Volatilite ve Hacim
+            df['ATR'] = ta.volatility.AverageTrueRange(high=yuksek, low=dusuk, close=kapanis, window=14).average_true_range()
             df['Hacim_Ort_20'] = hacim.rolling(window=20).mean()
             
-            bollinger = ta.volatility.BollingerBands(close=kapanis, window=20, window_dev=2)
-            df['BB_Alt'] = bollinger.bollinger_lband()
-            
-            # Smart Money / Kurumsal Para Takibi (20 Günlük Rolling VWAP)
+            # Smart Money Takibi: VWAP ve CMF (Chaikin Money Flow)
             tipik_fiyat = (yuksek + dusuk + kapanis) / 3
             df['VWAP_20'] = (tipik_fiyat * hacim).rolling(window=20).sum() / hacim.rolling(window=20).sum()
+            df['CMF'] = ta.volume.ChaikinMoneyFlowIndicator(high=yuksek, low=dusuk, close=kapanis, volume=hacim, window=20).chaikin_money_flow()
             
-            # İzleyen Stop için Son 10 Günün Zirvesi
+            # Trend Gücü: ADX
+            df['ADX'] = ta.trend.ADXIndicator(high=yuksek, low=dusuk, close=kapanis, window=14).adx()
+            
+            # İstatistiksel Aşırılık: Z-Skoru (Mean Reversion)
+            df['Standart_Sapma'] = kapanis.rolling(window=20).std()
+            df['Z_Score'] = (kapanis - df['SMA_20']) / df['Standart_Sapma']
+            
+            # İzleyen Stop
             df['Highest_10'] = yuksek.rolling(window=10).max()
         
         df.dropna(inplace=True)
         return df
 
-# --- 4. STRATEJİ VE RİSK YÖNETİMİ ---
+# --- 4. BACKTEST MODÜLÜ ---
+class Backtester:
+    @staticmethod
+    def hizli_test(df):
+        """Son 2 yıllık veride sistemin al-sat mantığını simüle eder."""
+        if df is None or len(df) < 50: return 0, 0, 0
+        
+        baslangic_sermaye = 100000
+        sermaye = baslangic_sermaye
+        pozisyon_acik = False
+        alinan_fiyat = 0
+        basarili_islem = 0
+        toplam_islem = 0
+        
+        for i in range(50, len(df)):
+            row = df.iloc[i]
+            
+            # Strateji Alım Şartları
+            al_sinyali = (row['Close'] > row['SMA_50']) and (row['MACD_Line'] > row['MACD_Signal']) and (row['ADX'] > 20) and (row['Z_Score'] < 2)
+            # Strateji Satım Şartları
+            sat_sinyali = (row['RSI'] > 70) or (row['MACD_Line'] < row['MACD_Signal']) or (row['Z_Score'] > 2.5)
+            
+            if not pozisyon_acik and al_sinyali:
+                alinan_fiyat = row['Close']
+                alinan_lot = sermaye / alinan_fiyat
+                pozisyon_acik = True
+                
+            elif pozisyon_acik and sat_sinyali:
+                satilan_fiyat = row['Close']
+                sermaye = alinan_lot * satilan_fiyat
+                toplam_islem += 1
+                if (satilan_fiyat > alinan_fiyat): basarili_islem += 1
+                pozisyon_acik = False
+                
+        # Açık pozisyon varsa son gün fiyatından kapat
+        if pozisyon_acik:
+            satilan_fiyat = df.iloc[-1]['Close']
+            sermaye = alinan_lot * satilan_fiyat
+            toplam_islem += 1
+            if (satilan_fiyat > alinan_fiyat): basarili_islem += 1
+                
+        getiri_yuzdesi = ((sermaye - baslangic_sermaye) / baslangic_sermaye) * 100
+        win_rate = (basarili_islem / toplam_islem * 100) if toplam_islem > 0 else 0
+        
+        return round(win_rate, 1), round(getiri_yuzdesi, 1), toplam_islem
+
+# --- 5. STRATEJİ VE RİSK YÖNETİMİ ---
 class QuantStrategy:
     def __init__(self, config, piyasa_rejimi):
         self.config = config
         self.piyasa_rejimi = piyasa_rejimi
 
     def pozisyon_buyuklugu_hesapla(self, fiyat, stop_loss):
-        # Piyasa AYI ise alınan riski otomatik olarak yarıya düşür (Risk Optimizasyonu)
         aktif_risk_orani = self.config.risk_orani / 2 if "AYI" in self.piyasa_rejimi else self.config.risk_orani
         risk_miktari = self.config.sermaye * aktif_risk_orani
         hisse_basina_risk = fiyat - stop_loss
-        
         if hisse_basina_risk <= 0: return 0
-        alinacak_lot = int(risk_miktari / hisse_basina_risk)
-        return alinacak_lot
+        return int(risk_miktari / hisse_basina_risk)
 
     def analiz_et(self, hisse_kodu):
-        gunluk, haftalik, fk_orani = DataFetcher.veri_indir(hisse_kodu)
+        gunluk, haftalik, temel_veriler = DataFetcher.veri_indir(hisse_kodu)
         if gunluk is None or haftalik is None: return None, None
             
-        kapanis_fiyatlari = gunluk['Close'].copy() # Korelasyon için ham kapanışları sakla
-        
+        kapanis_fiyatlari = gunluk['Close'].copy()
         gunluk = TechnicalAnalyzer.gostergeleri_hesapla(gunluk, periyot="gunluk")
         haftalik = TechnicalAnalyzer.gostergeleri_hesapla(haftalik, periyot="haftalik")
         
         if gunluk.empty or haftalik.empty: return None, None
             
+        # Backtest'i çalıştır
+        win_rate, tarihsel_getiri, islem_sayisi = Backtester.hizli_test(gunluk)
+        
         son_gunluk = gunluk.iloc[-1]
         son_haftalik = haftalik.iloc[-1]
         
@@ -131,82 +187,83 @@ class QuantStrategy:
         rsi = float(son_gunluk['RSI'])
         atr = float(son_gunluk['ATR'])
         
-        # Statik yerine İzleyen Stop (Trailing Stop)
-        zirve_10 = float(son_gunluk['Highest_10'])
-        izleyen_stop = zirve_10 - (atr * self.config.atr_stop)
-        # Eğer hesaplanan stop fiyatın üzerindeyse (ani düşüş vb.), fiyatın kendisinden ATR çıkar
+        izleyen_stop = float(son_gunluk['Highest_10']) - (atr * self.config.atr_stop)
         izleyen_stop = izleyen_stop if izleyen_stop < fiyat else fiyat - (atr * self.config.atr_stop)
-        
         kar_al = fiyat + (atr * self.config.atr_kar)
         
         skor = 0
         nedenler = []
         
-        # Piyasa Rejimi (XU100) Filtresi
+        # Piyasa Rejimi (Makro Filtre)
         if "AYI" in self.piyasa_rejimi:
-            skor -= 20
-            nedenler.append("BIST Ayı Piyasasında")
+            skor -= 20; nedenler.append("Endeks Ayı Piyasasında")
         
-        # Haftalık Trend
-        if son_haftalik['Close'] > son_haftalik['SMA_50']:
-            skor += 25; nedenler.append("Haftalık Trend Güçlü")
-        else:
-            nedenler.append("Haftalık Trend Zayıf")
+        # Temel Analiz Değerlemeleri (F/K, PD/DD, ROE)
+        fk = temel_veriler.get('fk')
+        pd_dd = temel_veriler.get('pd_dd')
+        roe = temel_veriler.get('roe')
+        
+        if fk is not None:
+            if 0 < fk < 15: skor += 10; nedenler.append("F/K Uygun")
+            elif fk > 50 or fk < 0: skor -= 15; nedenler.append("F/K Pahalı/Negatif")
+        if pd_dd is not None and pd_dd < 2: skor += 10; nedenler.append("Ucuz (PD/DD<2)")
+        if roe is not None and roe > 0.20: skor += 10; nedenler.append("Kârlı Şirket (ROE>%20)")
 
-        # Smart Money (VWAP) Onayı
-        if fiyat > son_gunluk['VWAP_20']:
-            skor += 20; nedenler.append("Kurumsal Para Desteği (VWAP)")
-            
-        # Günlük Momentum ve Trend
-        if fiyat > son_gunluk['SMA_200']: skor += 10; nedenler.append("200G Ort. Üzerinde")
-        if rsi < self.config.rsi_al: skor += 15; nedenler.append("RSI Aşırı Satım")
-        if son_gunluk['MACD_Line'] > son_gunluk['MACD_Signal']: skor += 15; nedenler.append("MACD Alımda")
-        if son_gunluk['Volume'] > son_gunluk['Hacim_Ort_20']: skor += 10; nedenler.append("Hacim Onayı")
+        # Trend ve Momentum
+        if son_haftalik['Close'] > son_haftalik['SMA_50']: skor += 15
+        if fiyat > son_gunluk['SMA_200']: skor += 10
+        if son_gunluk['MACD_Line'] > son_gunluk['MACD_Signal']: skor += 10; nedenler.append("MACD Alımda")
         
-        # Temel Çarpanlar
-        if fk_orani:
-            if fk_orani > 50: skor -= 15; nedenler.append("F/K Pahalı")
-            elif fk_orani < 0: skor -= 25; nedenler.append("Negatif F/K")
-                
-        skor = max(0, min(skor, 100)) # Skoru 0-100 arasına sıkıştır
+        # Trend Gücü (ADX)
+        if son_gunluk['ADX'] < 20: skor -= 15; nedenler.append("Trend Zayıf (Yatay)")
+        elif son_gunluk['ADX'] > 25: skor += 10; nedenler.append("Trend Güçlü")
+        
+        # Smart Money (VWAP & CMF)
+        if fiyat > son_gunluk['VWAP_20']: skor += 10; nedenler.append("VWAP Desteği")
+        if son_gunluk['CMF'] > 0.05: skor += 10; nedenler.append("Para Girişi (CMF)")
+        elif son_gunluk['CMF'] < -0.05: skor -= 15; nedenler.append("Para Çıkışı Var")
+        
+        # İstatistiksel Aşırılık (Z-Score)
+        if son_gunluk['Z_Score'] > 2.5: skor -= 30; nedenler.append("Aşırı Şişmiş (Balon)")
+        elif son_gunluk['Z_Score'] < -2.0: skor += 15; nedenler.append("Aşırı Ucuzlamış")
+        
+        skor = max(0, min(skor, 100))
         
         if skor >= 80: karar = "🔥 KESİN AL"
         elif skor >= 60: karar = "🟢 POTANSİYEL AL"
-        elif rsi > self.config.rsi_sat: karar = "🔴 SAT / RİSKLİ"
+        elif son_gunluk['Z_Score'] > 2 or rsi > self.config.rsi_sat: karar = "🔴 SAT / RİSKLİ"
         else: karar = "⚪ İZLEMEDE"
             
         lot_sayisi = self.pozisyon_buyuklugu_hesapla(fiyat, izleyen_stop) if "AL" in karar else 0
-        sermaye_kullanimi = round((lot_sayisi * fiyat), 2)
             
         sonuc_dict = {
             "Hisse": hisse_kodu.replace(".IS", ""), 
-            "Fiyat (₺)": round(fiyat, 2), 
-            "Skor": f"%{skor}", 
             "Karar": karar, 
+            "Skor": f"%{skor}",
+            "Win Rate (2Y)": f"%{win_rate}" if islem_sayisi > 0 else "N/A",
+            "Tarihsel Getiri": f"%{tarihsel_getiri}" if islem_sayisi > 0 else "N/A",
+            "Fiyat (₺)": round(fiyat, 2), 
             "Önerilen Lot": lot_sayisi,
-            "Sermaye Gerekli (₺)": sermaye_kullanimi,
-            "İzleyen Stop (₺)": round(izleyen_stop, 2), 
-            "Hedef (₺)": round(kar_al, 2), 
-            "Nedenler": " | ".join(nedenler)
+            "İzleyen Stop (₺)": round(izleyen_stop, 2),
+            "Nedenler": " | ".join(nedenler[:4]) # Arayüz şişmesin diye en önemli 4 nedeni göster
         }
         
         return sonuc_dict, kapanis_fiyatlari
 
-# --- 5. ARAYÜZ VE ORKESTRASYON ---
+# --- 6. ARAYÜZ VE ORKESTRASYON ---
 def ui_olustur():
-    st.title("🛡️ Hedge Fon Modu: Quant Bot v4.0")
-    st.markdown("Piyasa filtresi, Smart Money takibi, İzleyen Stop ve Korelasyon koruması entegreli profesyonel sistem.")
+    st.title("🛡️ Hedge Fon Modu: Quant Bot v5.0")
+    st.markdown("Piyasa filtresi, Smart Money (CMF/VWAP), Z-Skoru, ADX, Temel Analiz ve Tarihsel Backtest entegreli sistem.")
 
-    # ŞİFRE KONTROLÜ (Streamlit Cloud için)
+    # ŞİFRE KONTROLÜ (Geliştirme için geçici kapalı/açık)
     try:
-        beklenen_sifre = st.secrets["sistem_sifresi"]
-    except KeyError:
-        st.error("🚨 Sistem Hatası: Şifre ayarlanmamış! Streamlit Settings -> Secrets bölümüne 'sistem_sifresi' ekleyin.")
-        st.stop()
+        beklenen_sifre = st.secrets.get("sistem_sifresi", "admin123")
+    except:
+        beklenen_sifre = "admin123"
 
     girilen_sifre = st.sidebar.text_input("Sisteme Giriş Şifresi:", type="password")
     if girilen_sifre != beklenen_sifre:
-        st.sidebar.warning("Sistemi kullanmak için doğru şifreyi girmelisiniz.")
+        st.sidebar.warning("Sistemi kullanmak için doğru şifreyi girmelisiniz. (Varsayılan: admin123)")
         st.stop()
     st.sidebar.success("Giriş Başarılı! ✅")
 
@@ -220,7 +277,6 @@ def ui_olustur():
     atr_stop = st.sidebar.slider("İzleyen Stop ATR", 1.0, 5.0, 1.5, step=0.1)
     atr_kar = st.sidebar.slider("Kar-Al ATR", 1.0, 10.0, 3.0, step=0.1)
 
-    # 1. PİYASA REJİMİNİ ÇEK VE GÖSTER
     endeks_durumu, xu_fiyat, xu_sma = DataFetcher.endeks_durumu_getir()
     
     col1, col2, col3 = st.columns(3)
@@ -229,19 +285,19 @@ def ui_olustur():
     col3.metric("BIST 100 SMA(50)", f"{round(xu_sma, 2)}")
     
     if "AYI" in endeks_durumu:
-        st.warning("⚠️ BIST 100 şu an düşüş trendinde (SMA50 Altında). Sistem otomatik savunma moduna geçerek alım katsayılarını zorlaştırdı ve risk limitlerinizi yarıya indirdi.")
+        st.warning("⚠️ BIST 100 şu an düşüş trendinde. Sistem savunma moduna geçerek alım şartlarını zorlaştırdı ve risk limitlerini yarıya indirdi.")
 
     config = BotConfig(rsi_al, rsi_sat, atr_stop, atr_kar, toplam_sermaye, risk_yuzdesi)
     strateji = QuantStrategy(config, endeks_durumu)
 
-    varsayilan_hisseler = "THYAO\nASELS\nTUPRS\nISCTR\nKCHOL\nSISE\nBIMAS\nAKSA\nENKAI"
+    varsayilan_hisseler = "THYAO\nASELS\nTUPRS\nISCTR\nKCHOL\nSISE\nBIMAS\nAKSA\nENKAI\nFROTO"
     st.sidebar.markdown("---")
     hisseler_metin = st.sidebar.text_area("Taranacak Hisseler:", varsayilan_hisseler, height=150)
 
-    if st.sidebar.button("🚀 Derin Analizi Başlat"):
+    if st.sidebar.button("🚀 Akıllı Tarama ve Backtest Başlat"):
         hisse_listesi = [h.strip().upper() + ".IS" for h in hisseler_metin.split("\n") if h.strip()]
         
-        st.info("Kurumsal veri filtreleri çalıştırılıyor, lütfen bekleyin...")
+        st.info("Algoritmalar çalıştırılıyor, geçmiş veriler test ediliyor. Lütfen bekleyin...")
         ilerleme_cubugu = st.progress(0)
         durum_metni = st.empty()
         
@@ -250,8 +306,7 @@ def ui_olustur():
         toplam_hisse = len(hisse_listesi)
         
         for i, hisse in enumerate(hisse_listesi):
-            durum_metni.text(f"Taranıyor: {hisse} ({i+1}/{toplam_hisse})")
-            
+            durum_metni.text(f"Analiz ve Backtest: {hisse} ({i+1}/{toplam_hisse})")
             analiz_sonucu, kapanis_verisi = strateji.analiz_et(hisse)
             if analiz_sonucu:
                 sonuclar.append(analiz_sonucu)
@@ -266,7 +321,7 @@ def ui_olustur():
             df['Saf Skor'] = df['Skor'].apply(lambda x: int(x.replace('%', '')))
             df = df.sort_values(by='Saf Skor', ascending=False).drop(columns=['Saf Skor'])
             
-            st.success("✅ Tüm tarama ve risk katsayısı hesaplamaları tamamlandı!")
+            st.success("✅ Tüm tarama, backtest ve risk katsayısı hesaplamaları tamamlandı!")
             
             def tabloyu_renklendir(val):
                 if "🔥 KESİN AL" in str(val): return 'background-color: #1e4620; color: white; font-weight: bold;'
@@ -277,8 +332,6 @@ def ui_olustur():
             st.dataframe(df.style.map(tabloyu_renklendir, subset=['Karar']), use_container_width=True)
             
             st.markdown("---")
-            
-            # KORELASYON KORUMASI (Risk Yönetimi)
             st.markdown("### 🕸️ Portföy Korelasyon Risk Analizi")
             if kapanis_sozlugu:
                 fiyat_df = pd.DataFrame(kapanis_sozlugu).dropna()
@@ -294,12 +347,11 @@ def ui_olustur():
                             yuksek_korelasyonlu_ciftler.append(f"**{hisse1}** ve **{hisse2}** (Benzerlik: %{round(korelasyon_degeri*100, 1)})")
                 
                 if yuksek_korelasyonlu_ciftler:
-                    st.error("🚨 **Yüksek Korelasyon Uyarısı:** Aşağıdaki hisselerin fiyat hareketleri birbirine çok benzemektedir. Bu hisselerin hepsini aynı anda almak, portföyünüzün çeşitliliğini (diversification) bozar ve sektörel riski artırır.")
+                    st.error("🚨 **Yüksek Korelasyon Uyarısı:** Aşağıdaki hisseler çok benzer hareket ediyor. Çeşitliliği korumak için gruptan sadece birini seçin.")
                     for cift in yuksek_korelasyonlu_ciftler:
                         st.markdown(f"- {cift}")
-                    st.info("💡 Tavsiye: Birbirine çok benzeyen bu hisselerden analiz skoru en yüksek olanı seçip diğerlerini elemeniz fon güvenliği açısından daha sağlıklıdır.")
                 else:
-                    st.success("✅ İncelenen hisseler arasında tehlikeli bir korelasyon (benzerlik) bulunamadı. Portföy dağılımı sağlıklı yapılabilir.")
+                    st.success("✅ İncelenen hisseler arasında tehlikeli bir korelasyon bulunamadı.")
             
             st.markdown("---")
             st.markdown("### 📈 Hızlı Grafik İzleme")
