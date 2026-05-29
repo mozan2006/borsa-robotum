@@ -72,9 +72,12 @@ def ui_olustur():
                 sonuclar.append(res)
                 kapanislar[res['Hisse']] = close_data
         
-        if sonuclar:
-            df = pd.DataFrame(sonuclar)
-            st.dataframe(df, use_container_width=True)
+        if sonuclar = []
+for h in hisse_listesi:
+    sonuc = strateji.analiz_et(h)
+    if sonuc: # Eğer sonuç None dönmediyse listeye ekle
+        sonuclar.append(sonuc)
+
             
             # Korelasyon Analizi
             st.markdown("### 🕸️ Portföy Korelasyon Risk Analizi")
