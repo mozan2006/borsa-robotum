@@ -12,17 +12,14 @@ from sklearn.preprocessing import StandardScaler
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- SAYFA AYARLARI (GİRİŞ EKRANINDAN ÖNCE YÜKLENMELİ) ---
-st.set_page_config(page_title="Ultimate Quant Bot v6.1", page_icon="🤖", layout="wide")
+# --- SAYFA AYARLARI ---
+st.set_page_config(page_title="Ultimate Quant Bot v6.2", page_icon="🤖", layout="wide")
 
 # --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
 def sifre_kontrol():
-    """Streamlit session_state kullanarak güvenli giriş ekranı oluşturur."""
-    # Oturum durumu yoksa başlat
     if "giris_basarili" not in st.session_state:
         st.session_state["giris_basarili"] = False
 
-    # Giriş yapılmadıysa login ekranını göster
     if not st.session_state["giris_basarili"]:
         st.markdown("<h1 style='text-align: center;'>🔒 Sistem Erişimi</h1>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center;'>Bu, kapalı devre bir Quant Fon arayüzüdür. Lütfen erişim şifrenizi girin.</p>", unsafe_allow_html=True)
@@ -34,7 +31,6 @@ def sifre_kontrol():
                 submit_button = st.form_submit_button("Sisteme Giriş Yap", use_container_width=True)
                 
                 if submit_button:
-                    # Şifreyi Streamlit Secrets'tan al (Yoksa fallback olarak admin123 kullan)
                     try:
                         dogru_sifre = st.secrets["sistem_sifresi"]
                     except:
@@ -43,17 +39,13 @@ def sifre_kontrol():
                     if girilen_sifre == dogru_sifre:
                         st.session_state["giris_basarili"] = True
                         st.success("Giriş Başarılı! Sistem Yükleniyor...")
-                        st.rerun() # Sayfayı yenile ve içeriği göster
+                        st.rerun()
                     else:
                         st.error("🚨 Hatalı Şifre! Lütfen tekrar deneyin.")
-        
-        # Giriş yapılana kadar kodun geri kalanını durdur
         st.stop()
 
-# Giriş kontrolünü çalıştır (Burayı geçemeyen alttaki kodlara ulaşamaz)
 sifre_kontrol()
 
-# Çıkış Yap Butonu (Sidebar)
 if st.sidebar.button("🚪 Çıkış Yap", use_container_width=True):
     st.session_state["giris_basarili"] = False
     st.rerun()
@@ -69,7 +61,7 @@ class BotConfig:
         self.komisyon = komisyon
         self.slippage = slippage
 
-# --- 2. VERİ VE DUYGU ANALİZİ (SENTIMENT) ---
+# --- 2. VERİ VE DUYGU ANALİZİ ---
 class DataFetcher:
     @staticmethod
     def veri_indir(hisse_kodu):
@@ -96,7 +88,7 @@ class DataFetcher:
             logging.error(f"Veri çekme hatası ({hisse_kodu}): {e}")
             return None, None, None, None
 
-# --- 3. TEKNİK VE MAKİNE ÖĞRENMESİ MODÜLÜ ---
+# --- 3. TEKNİK VE MAKİNE ÖĞRENMESİ ---
 class QuantModel:
     @staticmethod
     def gostergeleri_hesapla(df):
@@ -137,7 +129,7 @@ class QuantModel:
         except:
             return 50.0
 
-# --- 4. GERÇEKÇİ BACKTEST (Slippage & Komisyon) ---
+# --- 4. BACKTEST (Slippage & Komisyon) ---
 class Backtester:
     @staticmethod
     def gercekci_test(df, komisyon_orani, slippage_orani):
@@ -211,9 +203,6 @@ class QuantStrategy:
         rsi = float(son_gun['RSI'])
         atr = float(son_gun['ATR'])
         
-        izleyen_stop = float(son_gun['Highest_10']) - (atr * self.config.atr_stop)
-        izleyen_stop = izleyen_stop if izleyen_stop < fiyat else fiyat - (atr * self.config.atr_stop)
-        
         skor = 0
         nedenler = []
         
@@ -251,10 +240,11 @@ class QuantStrategy:
 
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("🧠 YZ Destekli Hedge Fon Botu v6.1")
-    st.markdown("Güvenli oturum yönetimi ile desteklenen kurumsal altyapı.")
+    st.title("🧠 YZ Destekli Hedge Fon Botu v6.2")
+    st.markdown("Otomatik BIST 30 Radarı, AI Tahmini ve Kelly Optimizasyonu entegreli.")
     st.markdown("---")
 
+    # --- YAN MENÜ ---
     st.sidebar.markdown("### 🏦 Kurumsal Parametreler")
     toplam_sermaye = st.sidebar.number_input("Yönetilen Bakiye (₺)", min_value=10000, value=100000)
     komisyon = st.sidebar.number_input("Komisyon Oranı (%)", value=0.1, step=0.05) / 100
@@ -263,10 +253,12 @@ def ui_olustur():
     config = BotConfig(40, 75, 1.5, 3.0, toplam_sermaye, komisyon, slippage)
     strateji = QuantStrategy(config)
 
+    # --- 1. MANUEL TARAMA BÖLÜMÜ ---
+    st.sidebar.markdown("### 🔍 Manuel Tarama")
     varsayilan_hisseler = "THYAO\nASELS\nTUPRS\nISCTR\nKCHOL"
     hisseler_metin = st.sidebar.text_area("Taranacak Hisseler:", varsayilan_hisseler, height=120)
 
-    if st.sidebar.button("🚀 Tarama ve Analizi Başlat", use_container_width=True):
+    if st.sidebar.button("🚀 Manuel Analizi Başlat", use_container_width=True):
         hisse_listesi = [h.strip().upper() + ".IS" for h in hisseler_metin.split("\n") if h.strip()]
         
         ilerleme = st.progress(0)
@@ -292,15 +284,11 @@ def ui_olustur():
         else:
             st.error("Veri işlenemedi.")
 
-if __name__ == "__main__":
-    ui_olustur()
-        # --- YENİ EKLENEN: OTOMATİK FIRSAT RADARI ---
-    st.markdown("---")
+    # --- 2. OTOMATİK FIRSAT RADARI ---
     st.markdown("### 📡 Otomatik Fırsat Radarı (BIST 30)")
     st.markdown("Sistem arka planda ana tahtaları tarar ve sadece **🔥 KESİN AL (Skor >= %80)** seviyesine ulaşanları aşağıya düşürür.")
 
     if st.button("🔍 Radarı Çalıştır (BIST 30)", use_container_width=True):
-        # BIST 30 Hisseleri (Dilersen BIST 50'ye genişletebilirsin)
         bist30_hisseler = [
             "AKBNK.IS", "ARCLK.IS", "ASELS.IS", "BIMAS.IS", "EKGYO.IS", "ENKAI.IS", 
             "EREGL.IS", "FROTO.IS", "GARAN.IS", "GUBRF.IS", "HEKTS.IS", "ISCTR.IS", 
@@ -315,7 +303,6 @@ if __name__ == "__main__":
         
         for i, hisse in enumerate(bist30_hisseler):
             sonuc = strateji.analiz_et(hisse)
-            # Sadece KESİN AL veya Skoru 80 ve üzeri olanları radara al
             if sonuc and ("KESİN AL" in sonuc["Karar"] or int(sonuc["Skor"].replace("%", "")) >= 80):
                 bulunan_firsatlar.append(sonuc)
             radar_ilerleme.progress((i + 1) / len(bist30_hisseler))
@@ -325,8 +312,7 @@ if __name__ == "__main__":
         if bulunan_firsatlar:
             st.success(f"🚨 Ekrana Düşen Fırsatlar: {len(bulunan_firsatlar)} Adet 'Güçlü Al' Sinyali Yakalandı!")
             
-            # Fırsatları yan yana şık kutular (card) içinde göster
-            sutunlar = st.columns(min(len(bulunan_firsatlar), 4)) # Maksimum 4 sütun yan yana
+            sutunlar = st.columns(min(len(bulunan_firsatlar), 4))
             for idx, firsat in enumerate(bulunan_firsatlar):
                 with sutunlar[idx % 4]:
                     st.markdown(f"""
@@ -337,9 +323,4 @@ if __name__ == "__main__":
                         <hr style="border-color: #4caf50;">
                         <p style="font-size: 14px;"><b>Yapay Zeka:</b> {firsat['AI Tahmini']}</p>
                         <p style="font-size: 14px;"><b>Win Rate:</b> {firsat['Win Rate']}</p>
-                        <p style="font-size: 12px; color: #a5d6a7;"><i>{firsat['Nedenler']}</i></p>
-                    </div>
-                    """, unsafe_allow_html=True)
-        else:
-            st.warning("Şu anki piyasa koşullarında radara takılan bir fırsat bulunamadı. Endeks düşüşte olabilir veya hisseler aşırı şişmiş olabilir.")
-
+                        <p style="font-size: 12px; color: #a5d6a
