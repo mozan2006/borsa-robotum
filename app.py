@@ -162,3 +162,155 @@ class QuantStrategy:
         if rsi < self.config.rsi_al: skor += 15; nedenler.append("RSI Aşırı Satım")
         if son_gunluk['MACD_Line'] > son_gunluk['MACD_Signal']: skor += 15; nedenler.append("MACD Alımda")
         if son_gunluk['Volume'] > son_gunluk['Hacim_Ort_20']: skor += 10; nedenler.append("Hacim Onayı")
+        
+        # Temel Çarpanlar
+        if fk_orani:
+            if fk_orani > 50: skor -= 15; nedenler.append("F/K Pahalı")
+            elif fk_orani < 0: skor -= 25; nedenler.append("Negatif F/K")
+                
+        skor = max(0, min(skor, 100)) # Skoru 0-100 arasına sıkıştır
+        
+        if skor >= 80: karar = "🔥 KESİN AL"
+        elif skor >= 60: karar = "🟢 POTANSİYEL AL"
+        elif rsi > self.config.rsi_sat: karar = "🔴 SAT / RİSKLİ"
+        else: karar = "⚪ İZLEMEDE"
+            
+        lot_sayisi = self.pozisyon_buyuklugu_hesapla(fiyat, izleyen_stop) if "AL" in karar else 0
+        sermaye_kullanimi = round((lot_sayisi * fiyat), 2)
+            
+        sonuc_dict = {
+            "Hisse": hisse_kodu.replace(".IS", ""), 
+            "Fiyat (₺)": round(fiyat, 2), 
+            "Skor": f"%{skor}", 
+            "Karar": karar, 
+            "Önerilen Lot": lot_sayisi,
+            "Sermaye Gerekli (₺)": sermaye_kullanimi,
+            "İzleyen Stop (₺)": round(izleyen_stop, 2), 
+            "Hedef (₺)": round(kar_al, 2), 
+            "Nedenler": " | ".join(nedenler)
+        }
+        
+        return sonuc_dict, kapanis_fiyatlari
+
+# --- 5. ARAYÜZ VE ORKESTRASYON ---
+def ui_olustur():
+    st.title("🛡️ Hedge Fon Modu: Quant Bot v4.0")
+    st.markdown("Piyasa filtresi, Smart Money takibi, İzleyen Stop ve Korelasyon koruması entegreli profesyonel sistem.")
+
+    # LOKAL TEST İÇİN ŞİFRELEME YÖNTEMİ
+    # Buluta yüklerseniz st.secrets["sistem_sifresi"] ile değiştirin.
+    beklenen_sifre = "1234" 
+    girilen_sifre = st.sidebar.text_input("Sisteme Giriş Şifresi (1234):", type="password")
+    
+    if girilen_sifre != beklenen_sifre:
+        st.sidebar.warning("Sistemi kullanmak için şifreyi girmelisiniz.")
+        st.stop()
+        
+    st.sidebar.success("Giriş Başarılı! ✅")
+
+    st.sidebar.markdown("### ⚙️ Portföy Ayarları")
+    toplam_sermaye = st.sidebar.number_input("Toplam Sermaye (₺)", min_value=10000, value=100000, step=10000)
+    risk_yuzdesi = st.sidebar.slider("İşlem Başına Risk (%)", 0.5, 5.0, 1.0, step=0.1) / 100
+
+    st.sidebar.markdown("### 📊 Strateji Çarpanları")
+    rsi_al = st.sidebar.slider("RSI Alım Sınırı", 20, 50, 40)
+    rsi_sat = st.sidebar.slider("RSI Satım Sınırı", 60, 90, 75)
+    atr_stop = st.sidebar.slider("İzleyen Stop ATR", 1.0, 5.0, 1.5, step=0.1)
+    atr_kar = st.sidebar.slider("Kar-Al ATR", 1.0, 10.0, 3.0, step=0.1)
+
+    # 1. PİYASA REJİMİNİ ÇEK VE GÖSTER
+    endeks_durumu, xu_fiyat, xu_sma = DataFetcher.endeks_durumu_getir()
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("BIST 100 Rejimi", endeks_durumu)
+    col2.metric("BIST 100 Fiyat", f"{round(xu_fiyat, 2)}")
+    col3.metric("BIST 100 SMA(50)", f"{round(xu_sma, 2)}")
+    
+    if "AYI" in endeks_durumu:
+        st.warning("⚠️ BIST 100 şu an düşüş trendinde (SMA50 Altında). Sistem otomatik savunma moduna geçerek alım katsayılarını zorlaştırdı ve risk limitlerinizi yarıya indirdi.")
+
+    config = BotConfig(rsi_al, rsi_sat, atr_stop, atr_kar, toplam_sermaye, risk_yuzdesi)
+    strateji = QuantStrategy(config, endeks_durumu)
+
+    varsayilan_hisseler = "THYAO\nASELS\nTUPRS\nISCTR\nKCHOL\nSISE\nBIMAS\nAKSA\nENKAI"
+    st.sidebar.markdown("---")
+    hisseler_metin = st.sidebar.text_area("Taranacak Hisseler:", varsayilan_hisseler, height=150)
+
+    if st.sidebar.button("🚀 Derin Analizi Başlat"):
+        hisse_listesi = [h.strip().upper() + ".IS" for h in hisseler_metin.split("\n") if h.strip()]
+        
+        st.info("Kurumsal veri filtreleri çalıştırılıyor, lütfen bekleyin...")
+        ilerleme_cubugu = st.progress(0)
+        durum_metni = st.empty()
+        
+        sonuclar = []
+        kapanis_sozlugu = {}
+        toplam_hisse = len(hisse_listesi)
+        
+        for i, hisse in enumerate(hisse_listesi):
+            durum_metni.text(f"Taranıyor: {hisse} ({i+1}/{toplam_hisse})")
+            
+            analiz_sonucu, kapanis_verisi = strateji.analiz_et(hisse)
+            if analiz_sonucu:
+                sonuclar.append(analiz_sonucu)
+                kapanis_sozlugu[hisse.replace(".IS", "")] = kapanis_verisi
+                
+            ilerleme_cubugu.progress((i + 1) / toplam_hisse)
+        
+        durum_metni.empty()
+        
+        if sonuclar:
+            df = pd.DataFrame(sonuclar)
+            df['Saf Skor'] = df['Skor'].apply(lambda x: int(x.replace('%', '')))
+            df = df.sort_values(by='Saf Skor', ascending=False).drop(columns=['Saf Skor'])
+            
+            st.success("✅ Tüm tarama ve risk katsayısı hesaplamaları tamamlandı!")
+            
+            def tabloyu_renklendir(val):
+                if "🔥 KESİN AL" in str(val): return 'background-color: #1e4620; color: white; font-weight: bold;'
+                elif "🟢 POTANSİYEL AL" in str(val): return 'background-color: #2e7d32; color: white;'
+                elif "🔴 SAT" in str(val): return 'background-color: #b71c1c; color: white;'
+                return ''
+                
+            st.dataframe(df.style.map(tabloyu_renklendir, subset=['Karar']), use_container_width=True)
+            
+            st.markdown("---")
+            
+            # KORELASYON KORUMASI (Risk Yönetimi)
+            st.markdown("### 🕸️ Portföy Korelasyon Risk Analizi")
+            if kapanis_sozlugu:
+                fiyat_df = pd.DataFrame(kapanis_sozlugu).dropna()
+                korelasyon_matrisi = fiyat_df.pct_change().corr()
+                
+                yuksek_korelasyonlu_ciftler = []
+                for i in range(len(korelasyon_matrisi.columns)):
+                    for j in range(i+1, len(korelasyon_matrisi.columns)):
+                        hisse1 = korelasyon_matrisi.columns[i]
+                        hisse2 = korelasyon_matrisi.columns[j]
+                        korelasyon_degeri = korelasyon_matrisi.iloc[i, j]
+                        if korelasyon_degeri > 0.85:
+                            yuksek_korelasyonlu_ciftler.append(f"**{hisse1}** ve **{hisse2}** (Benzerlik: %{round(korelasyon_degeri*100, 1)})")
+                
+                if yuksek_korelasyonlu_ciftler:
+                    st.error("🚨 **Yüksek Korelasyon Uyarısı:** Aşağıdaki hisselerin fiyat hareketleri birbirine çok benzemektedir. Bu hisselerin hepsini aynı anda almak, portföyünüzün çeşitliliğini (diversification) bozar ve sektörel riski artırır.")
+                    for cift in yuksek_korelasyonlu_ciftler:
+                        st.markdown(f"- {cift}")
+                    st.info("💡 Tavsiye: Birbirine çok benzeyen bu hisselerden analiz skoru en yüksek olanı seçip diğerlerini elemeniz fon güvenliği açısından daha sağlıklıdır.")
+                else:
+                    st.success("✅ İncelenen hisseler arasında tehlikeli bir korelasyon (benzerlik) bulunamadı. Portföy dağılımı sağlıklı yapılabilir.")
+            
+            st.markdown("---")
+            st.markdown("### 📈 Hızlı Grafik İzleme")
+            secilen_hisse = st.selectbox("Detayını görmek istediğiniz hisseyi seçin:", df["Hisse"].tolist())
+            if secilen_hisse:
+                veri, _, _ = DataFetcher.veri_indir(secilen_hisse + ".IS")
+                if veri is not None:
+                    veri = veri.tail(120)
+                    fig = go.Figure(data=[go.Candlestick(x=veri.index, open=veri['Open'], high=veri['High'], low=veri['Low'], close=veri['Close'], name="Fiyat")])
+                    fig.update_layout(title=f"{secilen_hisse} - Son 120 Gün", template="plotly_dark", margin=dict(l=0, r=0, t=40, b=0))
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.error("Veri çekilemedi. Bağlantı sorunu olabilir.")
+
+if __name__ == "__main__":
+    ui_olustur()
