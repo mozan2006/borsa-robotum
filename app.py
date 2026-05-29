@@ -139,12 +139,7 @@ def ui_olustur():
         config = BotConfig(40, 75, 1.5, 3.0, toplam_sermaye, risk_yuzdesi)
         strateji = QuantStrategy(config)
         
-        # Hatalı olan çift işlem kısmı düzeltildi
-        sonuclar = []
-        for h in hisse_listesi:
-            sonuc = strateji.analiz_et(h)
-            if sonuc:
-                sonuclar.append(sonuc)
+        sonuclar = [strateji.analiz_et(h) for h in hisse_listesi if strateji.analiz_et(h)]
         
         if sonuclar:
             df = pd.DataFrame(sonuclar)
@@ -152,3 +147,4 @@ def ui_olustur():
 
 if __name__ == "__main__":
     ui_olustur()
+    
