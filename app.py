@@ -1,23 +1,21 @@
-import streamlit as st
+İmport streamlit as st
 import yfinance as yf
 import pandas as pd
 import ta
 import plotly.graph_objects as go
 import logging
 import warnings
-import concurrent.futures
-from typing import Tuple, Optional, List, Dict, Any
 
 # Uyarıları gizle
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v3.2", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v3.1", page_icon="📈", layout="wide")
 
 # --- 1. YAPILANDIRMA SINIFI ---
 class BotConfig:
-    def __init__(self, rsi_al: int, rsi_sat: int, atr_stop: float, atr_kar: float, sermaye: float, risk_orani: float):
+    def __init__(self, rsi_al, rsi_sat, atr_stop, atr_kar, sermaye, risk_orani):
         self.rsi_al = rsi_al
         self.rsi_sat = rsi_sat
         self.atr_stop = atr_stop
@@ -25,36 +23,29 @@ class BotConfig:
         self.sermaye = sermaye
         self.risk_orani = risk_orani
 
-# --- ÖNBELLEKLENMİŞ VERİ ÇEKME FONKSİYONU (YENİ) ---
-# Streamlit'in her tıklamada verileri baştan indirmesini önlemek için eklendi. (TTL: 1 Saat)
-@st.cache_data(ttl=3600, show_spinner=False)
-def cache_veri_indir(hisse_kodu: str) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[float]]:
-    try:
-        ticker = yf.Ticker(hisse_kodu)
-        gunluk_veri = ticker.history(period="2y", interval="1d")
-        haftalik_veri = ticker.history(period="5y", interval="1wk")
-        
-        if gunluk_veri.empty or haftalik_veri.empty or len(haftalik_veri) < 50:
-            return None, None, None
-        
-        info = ticker.info
-        fk = info.get('trailingPE', None)
-        return gunluk_veri, haftalik_veri, fk
-    except Exception as e:
-        logging.error(f"Veri Çekme Hatası ({hisse_kodu}): {e}")
-        return None, None, None
-
 # --- 2. VERİ YÖNETİMİ SINIFI ---
 class DataFetcher:
     @staticmethod
-    def veri_indir(hisse_kodu: str) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[float]]:
-        # Doğrudan cache'li fonksiyonu çağırıyoruz
-        return cache_veri_indir(hisse_kodu)
+    def veri_indir(hisse_kodu):
+        try:
+            ticker = yf.Ticker(hisse_kodu)
+            gunluk_veri = ticker.history(period="2y", interval="1d")
+            haftalik_veri = ticker.history(period="5y", interval="1wk")
+            
+            if gunluk_veri.empty or haftalik_veri.empty or len(haftalik_veri) < 50:
+                return None, None, None
+            
+            info = ticker.info
+            fk = info.get('trailingPE', None)
+            return gunluk_veri, haftalik_veri, fk
+        except Exception as e:
+            logging.error(f"Veri Çekme Hatası ({hisse_kodu}): {e}")
+            return None, None, None
 
 # --- 3. TEKNİK ANALİZ SINIFI ---
 class TeknikAnalizci:
     @staticmethod
-    def gostergeleri_hesapla(veri: pd.DataFrame, periyot: str = "gunluk") -> pd.DataFrame:
+    def gostergeleri_hesapla(veri, periyot="gunluk"):
         df = veri.copy()
         kapanis = df['Close']
         yuksek = df['High']
@@ -79,47 +70,18 @@ class TeknikAnalizci:
         
         return df.dropna()
 
-# --- GRAFİK ÇİZİCİ SINIFI (YENİ) ---
-# Plotly ile etkileşimli mum grafikleri oluşturmak için eklendi.
-class GrafikCizici:
-    @staticmethod
-    def ciz_plotly(df: pd.DataFrame, hisse_ismi: str) -> go.Figure:
-        son_veri = df.tail(100) # Sadece son 100 mumu göstererek grafiği okunabilir kılarız
-        
-        fig = go.Figure(data=[go.Candlestick(
-            x=son_veri.index,
-            open=son_veri['Open'], high=son_veri['High'],
-            low=son_veri['Low'], close=son_veri['Close'],
-            name='Fiyat'
-        )])
-        
-        if 'SMA_50' in son_veri.columns:
-            fig.add_trace(go.Scatter(x=son_veri.index, y=son_veri['SMA_50'], line=dict(color='blue', width=1.5), name='SMA 50'))
-        if 'SMA_200' in son_veri.columns:
-            fig.add_trace(go.Scatter(x=son_veri.index, y=son_veri['SMA_200'], line=dict(color='red', width=1.5), name='SMA 200'))
-            
-        fig.update_layout(
-            title=f"{hisse_ismi} Detaylı Teknik Görünüm (Son 100 Gün)",
-            xaxis_rangeslider_visible=False,
-            template='plotly_dark',
-            height=500,
-            margin=dict(l=0, r=0, t=40, b=0)
-        )
-        return fig
-
 # --- 4. STRATEJİ SINIFI ---
 class QuantStrategy:
-    def __init__(self, config: BotConfig):
+    def __init__(self, config):
         self.config = config
 
-    def pozisyon_buyuklugu_hesapla(self, fiyat: float, stop_loss: float) -> int:
+    def pozisyon_buyuklugu_hesapla(self, fiyat, stop_loss):
         risk_miktari = self.config.sermaye * self.config.risk_orani
         his_basina_risk = fiyat - stop_loss
         if his_basina_risk <= 0: return 0
         return int(risk_miktari / his_basina_risk)
 
-    def analiz_et(self, his_kodu: str) -> Optional[Dict[str, Any]]:
-        # Ana analiz mantığınız birebir korundu
+    def analiz_et(self, his_kodu):
         gunluk, haftalik, fk_orani = DataFetcher.veri_indir(his_kodu)
         if gunluk is None or haftalik is None: return None
         
@@ -161,57 +123,29 @@ class QuantStrategy:
             "Nedenler": " | ".join(nedenler)
         }
 
-    # --- TOPLU ANALİZ FONKSİYONU (YENİ) ---
-    # Çoklu işlem (Multithreading) ile hisseleri eşzamanlı olarak saniyeler içinde analiz eder.
-    def toplu_analiz(self, hisse_listesi: List[str]) -> List[Dict[str, Any]]:
-        sonuclar = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            gelecek_sonuclar = {executor.submit(self.analiz_et, hisse): hisse for hisse in hisse_listesi}
-            for future in concurrent.futures.as_completed(gelecek_sonuclar):
-                sonuc = future.result()
-                if sonuc:
-                    sonuclar.append(sonuc)
-        return sonuclar
-
 # --- 5. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("🤖 Profesyonel Quant Bot v3.2")
+    st.title("🤖 Profesyonel Quant Bot v3.1")
+    # Not: Streamlit Secrets ayarlarını kendi ortamınıza göre yapılandırın
     
     st.sidebar.markdown("### ⚙️ Ayarlar")
-    toplam_sermaye = st.sidebar.number_input("Toplam Sermaye (₺)", value=100000, step=10000)
+    toplam_sermaye = st.sidebar.number_input("Toplam Sermaye (₺)", value=100000)
     risk_yuzdesi = st.sidebar.slider("Risk (%)", 0.5, 5.0, 1.0) / 100
     
-    hisler_metin = st.sidebar.text_area("Hisse Kodları (Alt Alta):", "THYAO\nASELS\nTUPRS\nFROTO\nSISE\nKCHOL")
+    hisler_metin = st.sidebar.text_area("Hisse Kodları (Alt Alta):", "THYAO\nASELS\nTUPRS")
     
     if st.sidebar.button("🚀 Analizi Başlat"):
         hisse_listesi = [h.strip().upper() + ".IS" for h in hisler_metin.split("\n") if h.strip()]
         config = BotConfig(40, 75, 1.5, 3.0, toplam_sermaye, risk_yuzdesi)
         strateji = QuantStrategy(config)
         
-        # Analizi çalıştır (YENİ: Multithreading ve Spinner kullanılarak)
-        with st.spinner(f"Veriler Çekiliyor ve {len(hisse_listesi)} Hisse Eşzamanlı Analiz Ediliyor..."):
-            sonuclar = strateji.toplu_analiz(hisse_listesi)
+        sonuclar = [strateji.analiz_et(h) for h in hisse_listesi if strateji.analiz_et(h)]
         
         if sonuclar:
-            st.success("Analiz Tamamlandı!")
-            # Skora göre büyükten küçüğe sıralama
-            df = pd.DataFrame(sonuclar).sort_values(by="Skor", ascending=False).reset_index(drop=True)
+            df = pd.DataFrame(sonuclar)
             st.dataframe(df, use_container_width=True)
-            
-            st.markdown("---")
-            st.markdown("### 📊 Teknik Grafik İnceleme")
-            
-            # --- PLOTLY GRAFİK ARAYÜZÜ (YENİ) ---
-            secilen_hisse = st.selectbox("Grafiğini incelemek istediğiniz hisseyi seçin:", df["Hisse"])
-            if secilen_hisse:
-                tam_kod = secilen_hisse + ".IS"
-                gunluk_veri, _, _ = DataFetcher.veri_indir(tam_kod)
-                if gunluk_veri is not None:
-                    gunluk_ind = TeknikAnalizci.gostergeleri_hesapla(gunluk_veri, periyot="gunluk")
-                    fig = GrafikCizici.ciz_plotly(gunluk_ind, secilen_hisse)
-                    st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("Analiz edilebilir veri bulunamadı. Lütfen hisse kodlarını kontrol edin.")
 
 if __name__ == "__main__":
     ui_olustur()
+
+Bu kodu profesyonel şekilde nasıl en gelişmiş yapabilirim
