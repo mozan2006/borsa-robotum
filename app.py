@@ -2,93 +2,153 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import ta
-import warnings
 import plotly.graph_objects as go
+import logging
+import warnings
 
+# Uyarıları gizle
 warnings.filterwarnings('ignore')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v4.0", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v3.1", page_icon="📈", layout="wide")
 
-# --- 1. GÜVENLİK ---
-try:
-    beklenen_sifre = st.secrets["sistem_sifresi"]
-except KeyError:
-    st.error("🚨 Sistem Hatası: Streamlit Secrets ayarlanmamış!")
-    st.stop()
+# --- 1. YAPILANDIRMA SINIFI ---
+class BotConfig:
+    def __init__(self, rsi_al, rsi_sat, atr_stop, atr_kar, sermaye, risk_orani):
+        self.rsi_al = rsi_al
+        self.rsi_sat = rsi_sat
+        self.atr_stop = atr_stop
+        self.atr_kar = atr_kar
+        self.sermaye = sermaye
+        self.risk_orani = risk_orani
 
-# --- 2. VERİ VE ANALİZ SINIFLARI ---
+# --- 2. VERİ YÖNETİMİ SINIFI ---
 class DataFetcher:
     @staticmethod
     def veri_indir(hisse_kodu):
         try:
-            t = yf.Ticker(hisse_kodu)
-            df = t.history(period="2y", interval="1d")
-            return df if not df.empty else None
-        except: return None
+            ticker = yf.Ticker(hisse_kodu)
+            gunluk_veri = ticker.history(period="2y", interval="1d")
+            haftalik_veri = ticker.history(period="5y", interval="1wk")
+            
+            if gunluk_veri.empty or haftalik_veri.empty or len(haftalik_veri) < 50:
+                return None, None, None
+            
+            info = ticker.info
+            fk = info.get('trailingPE', None)
+            return gunluk_veri, haftalik_veri, fk
+        except Exception as e:
+            logging.error(f"Veri Çekme Hatası ({hisse_kodu}): {e}")
+            return None, None, None
 
-class QuantStrategy:
+# --- 3. TEKNİK ANALİZ SINIFI ---
+class TeknikAnalizci:
     @staticmethod
-    def analiz(hisse_kodu):
-        df = DataFetcher.veri_indir(hisse_kodu)
-        if df is None or len(df) < 200: return None
+    def gostergeleri_hesapla(veri, periyot="gunluk"):
+        df = veri.copy()
+        kapanis = df['Close']
+        yuksek = df['High']
+        dusuk = df['Low']
+        hacim = df['Volume']
+
+        if periyot == "haftalik":
+            df['SMA_50'] = ta.trend.SMAIndicator(close=kapanis, window=50).sma_indicator()
+        elif periyot == "gunluk":
+            df['RSI'] = ta.momentum.RSIIndicator(close=kapanis, window=14).rsi()
+            macd = ta.trend.MACD(close=kapanis)
+            df['MACD_Line'] = macd.macd()
+            df['MACD_Signal'] = macd.macd_signal()
+            df['SMA_200'] = ta.trend.SMAIndicator(close=kapanis, window=200).sma_indicator()
+            df['SMA_50'] = ta.trend.SMAIndicator(close=kapanis, window=50).sma_indicator()
+            df['SMA_20'] = ta.trend.SMAIndicator(close=kapanis, window=20).sma_indicator()
+            atr_ind = ta.volatility.AverageTrueRange(high=yuksek, low=dusuk, close=kapanis, window=14)
+            df['ATR'] = atr_ind.average_true_range()
+            df['Hacim_Ort_20'] = hacim.rolling(window=20).mean()
+            bollinger = ta.volatility.BollingerBands(close=kapanis, window=20, window_dev=2)
+            df['BB_Alt'] = bollinger.bollinger_lband()
         
-        # Göstergeler
-        df['RSI'] = ta.momentum.RSIIndicator(close=df['Close'], window=14).rsi()
-        df['SMA_200'] = ta.trend.SMAIndicator(close=df['Close'], window=200).sma_indicator()
-        df['ATR'] = ta.volatility.AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close'], window=14).average_true_range()
+        return df.dropna()
+
+# --- 4. STRATEJİ SINIFI ---
+class QuantStrategy:
+    def __init__(self, config):
+        self.config = config
+
+    def pozisyon_buyuklugu_hesapla(self, fiyat, stop_loss):
+        risk_miktari = self.config.sermaye * self.config.risk_orani
+        his_basina_risk = fiyat - stop_loss
+        if his_basina_risk <= 0: return 0
+        return int(risk_miktari / his_basina_risk)
+
+    def analiz_et(self, his_kodu):
+        gunluk, haftalik, fk_orani = DataFetcher.veri_indir(his_kodu)
+        if gunluk is None or haftalik is None: return None
         
-        s = df.iloc[-1]
-        fiyat = s['Close']
-        stop = fiyat - (s['ATR'] * 1.5)
+        gunluk = TeknikAnalizci.gostergeleri_hesapla(gunluk, periyot="gunluk")
+        haftalik = TeknikAnalizci.gostergeleri_hesapla(haftalik, periyot="haftalik")
+        
+        if gunluk.empty or haftalik.empty: return None
+
+        son_gunluk = gunluk.iloc[-1]
+        son_haftalik = haftalik.iloc[-1]
+        fiyat = float(son_gunluk['Close'])
+        atr = float(son_gunluk['ATR'])
         
         skor = 0
-        if fiyat > s['SMA_200']: skor += 40
-        if s['RSI'] < 40: skor += 30
+        nedenler = []
         
-        karar = "🔥 AL" if skor >= 60 else "⚪ İZLE"
-        return {"Hisse": hisse_kodu.replace(".IS", ""), "Fiyat": round(fiyat, 2), "Karar": karar, "Stop": round(stop, 2)}, df['Close']
+        if son_haftalik['Close'] > son_haftalik['SMA_50']:
+            skor += 25; nedenler.append("Haftalık Trend Yükselişte")
+        
+        if fiyat > son_gunluk['SMA_200']: skor += 15; nedenler.append("200G Ort. Üstünde")
+        if son_gunluk['RSI'] < self.config.rsi_al: skor += 20; nedenler.append("RSI Alım Bölgesi")
+        if son_gunluk['MACD_Line'] > son_gunluk['MACD_Signal']: skor += 15; nedenler.append("MACD Alımda")
+        if son_gunluk['Volume'] > son_gunluk['Hacim_Ort_20']: skor += 15; nedenler.append("Hacim Artışı")
+        
+        karar = "⚪ İZLEMEDE"
+        if skor >= 80: karar = "🔥 KESİN AL"
+        elif skor >= 60: karar = "🟢 POTANSİYEL AL"
+        elif son_gunluk['RSI'] > self.config.rsi_sat: karar = "🔴 SAT / RİSKLİ"
 
-# --- 3. ARAYÜZ ---
+        stop_loss = fiyat - (atr * self.config.atr_stop)
+        lot_sayisi = self.pozisyon_buyuklugu_hesapla(fiyat, stop_loss) if "AL" in karar else 0
+        
+        return {
+            "Hisse": his_kodu.replace(".IS", ""),
+            "Fiyat (₺)": round(fiyat, 2),
+            "Skor": f"%{skor}",
+            "Karar": karar,
+            "Önerilen Lot": lot_sayisi,
+            "Nedenler": " | ".join(nedenler)
+        }
+
+# --- 5. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("🛡️ Hedge Fon Modu: Quant Bot v4.0")
+    st.title("🤖 Profesyonel Quant Bot v3.1")
+    # Not: Streamlit Secrets ayarlarını kendi ortamınıza göre yapılandırın
     
-    # Giriş
-    sifre = st.sidebar.text_input("Şifre:", type="password")
-    if sifre != beklenen_sifre:
-        st.warning("Şifre hatalı.")
-        st.stop()
-
-    hisseler = st.sidebar.text_area("Hisseler (Alt alta):", "THYAO\nASELS\nTUPRS\nISCTR", height=150)
+    st.sidebar.markdown("### ⚙️ Ayarlar")
+    toplam_sermaye = st.sidebar.number_input("Toplam Sermaye (₺)", value=100000)
+    risk_yuzdesi = st.sidebar.slider("Risk (%)", 0.5, 5.0, 1.0) / 100
+    
+    hisler_metin = st.sidebar.text_area("Hisse Kodları (Alt Alta):", "THYAO\nASELS\nTUPRS")
     
     if st.sidebar.button("🚀 Analizi Başlat"):
-        hisse_listesi = [h.strip().upper() + ".IS" for h in hisseler.split("\n") if h.strip()]
+        hisse_listesi = [h.strip().upper() + ".IS" for h in hisler_metin.split("\n") if h.strip()]
+        config = BotConfig(40, 75, 1.5, 3.0, toplam_sermaye, risk_yuzdesi)
+        strateji = QuantStrategy(config)
+        
+        # Hatalı olan çift işlem kısmı düzeltildi
         sonuclar = []
-        kapanislar = {}
-        
         for h in hisse_listesi:
-            res, close_data = QuantStrategy.analiz(h)
-            if res:
-                sonuclar.append(res)
-                kapanislar[res['Hisse']] = close_data
+            sonuc = strateji.analiz_et(h)
+            if sonuc:
+                sonuclar.append(sonuc)
         
-        if sonuclar = []
-for h in hisse_listesi:
-    sonuc = strateji.analiz_et(h)
-    if sonuc: # Eğer sonuç None dönmediyse listeye ekle
-        sonuclar.append(sonuc)
-
-            
-            # Korelasyon Analizi
-            st.markdown("### 🕸️ Portföy Korelasyon Risk Analizi")
-            fiyat_df = pd.DataFrame(kapanislar).dropna()
-            corr = fiyat_df.pct_change().corr()
-            st.write("Hisseler arası benzerlik matrisi:")
-            st.dataframe(corr.style.background_gradient(cmap='RdYlGn'), use_container_width=True)
-            
-        else:
-            st.error("Veri çekilemedi. Hata oluştu.")
+        if sonuclar:
+            df = pd.DataFrame(sonuclar)
+            st.dataframe(df, use_container_width=True)
 
 if __name__ == "__main__":
     ui_olustur()
-        
