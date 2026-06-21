@@ -13,7 +13,7 @@ warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v8.1", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v8.2", page_icon="🤖", layout="wide")
 
 # --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
 def sifre_kontrol():
@@ -363,8 +363,8 @@ class QuantStrategy:
 
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("🧠 YZ Destekli Hedge Fon Botu v8.1 (Dengeli Sürüm)")
-    st.markdown("Matematiksel Puanlama Terazisi Düzeltildi. BIST 100 Katılım Radarı, Canlı KAP/Haber Yapay Zekası Entegre.")
+    st.title("🧠 YZ Destekli Katılım Fonu Botu v8.2")
+    st.markdown("Matematiksel Puanlama Terazisi Düzeltildi. BIST 100 Katılım Radarı ve Canlı KAP/Haber Yapay Zekası Entegre.")
     st.markdown("---")
 
     # --- YAN MENÜ ---
@@ -384,8 +384,8 @@ def ui_olustur():
         st.sidebar.warning("⚠️ BIST Genel Trendi: AYI (Baskılı)")
 
     # --- 1. MANUEL TARAMA BÖLÜMÜ ---
-    st.sidebar.markdown("### 🔍 Manuel Tarama")
-    varsayilan_hisseler = "THYAO\nASELS\nTUPRS\nMPARK\nYUNSA\nBIMAS\nDOAS"
+    st.sidebar.markdown("### 🔍 Manuel Tarama (Katılım Uyumlu)")
+    varsayilan_hisseler = "ASELS\nMPARK\nYUNSA\nBIMAS\nDOAS\nFROTO\nSMRTG"
     hisseler_metin = st.sidebar.text_area("Taranacak Hisseler:", varsayilan_hisseler, height=140)
 
     if st.sidebar.button("🚀 Manuel Analizi Başlat", use_container_width=True):
@@ -414,21 +414,22 @@ def ui_olustur():
             st.error("Veri işlenemedi.")
 
     # --- 2. OTOMATİK FIRSAT RADARI ---
-    st.markdown("### 📡 Otomatik Fırsat Radarı (BIST 100 Katılım Endeksi)")
-    st.markdown("Sistem katılım endeksindeki tahtaları **Eşzamanlı** tarar, teknik veriler ile **güncel haber duygu skorunu** harmanlayarak AL fırsatlarını listeler.")
+    st.markdown("### 📡 Otomatik Fırsat Radarı (Sadece Katılım Endeksi)")
+    st.markdown("Sistem BIST 100 içindeki saf **Katılım Endeksi (XK100)** tahtalarını Eşzamanlı tarar, teknik veriler ile güncel haber duygu skorunu harmanlayarak AL fırsatlarını listeler.")
 
     if st.button("🔍 Katılım Endeksi Eşzamanlı Radarını Çalıştır", use_container_width=True):
+        # Arındırılmış, faiz ve katılım dışı faktörlerden arınmış saf Katılım Listesi
         bist_katilim_hisseler = [
-            "ALBRK.IS", "ASELS.IS", "BIMAS.IS", "CANTE.IS", "CIMSA.IS", "DOAS.IS", 
-            "EGEEN.IS", "EKGYO.IS", "ENJSA.IS", "ENKAI.IS", "EUPWR.IS", "FROTO.IS", 
-            "GWIND.IS", "HEKTS.IS", "KCAER.IS", "KMPUR.IS", "KONTR.IS", "KORDS.IS", 
-            "KOZAA.IS", "KOZAL.IS", "KRDMD.IS", "MIATK.IS", "MPARK.IS", "OTKAR.IS", 
-            "OYAKC.IS", "PGSUS.IS", "SASA.IS", "SMARTG.IS", "SMRTG.IS", "THYAO.IS", 
-            "TOASO.IS", "TUKAS.IS", "TUPRS.IS", "ULKER.IS", "VESBE.IS", "VESTL.IS", 
-            "YEOTK.IS", "YUNSA.IS"
+            "ALBRK.IS", "ALFAS.IS", "ASELS.IS", "ASTOR.IS", "BIMAS.IS", "BRSAN.IS", 
+            "CANTE.IS", "CIMSA.IS", "CWENE.IS", "DOAS.IS", "EGEEN.IS", "EKGYO.IS", 
+            "ENJSA.IS", "ENKAI.IS", "EUPWR.IS", "FROTO.IS", "GESAN.IS", "GWIND.IS", 
+            "HEKTS.IS", "IPEKE.IS", "JANTS.IS", "KCAER.IS", "KMPUR.IS", "KONTR.IS", 
+            "KORDS.IS", "KOZAA.IS", "KOZAL.IS", "KRDMD.IS", "MIATK.IS", "MPARK.IS", 
+            "OTKAR.IS", "OYAKC.IS", "QUAGR.IS", "SASA.IS", "SMRTG.IS", "TTRAK.IS", 
+            "TUKAS.IS", "VESBE.IS", "YEOTK.IS", "YUNSA.IS"
         ]
         
-        st.info("Eşzamanlı Çoklu İş Parçacığı Motoru Aktif. Teknik Göstergeler ve KAP/Gündem Akışları Eşzamanlı İnceleniyor...")
+        st.info("Eşzamanlı Çoklu İş Parçacığı Motoru Aktif. Katılım Endeksi Hisseleri Eşzamanlı İnceleniyor...")
         
         bulunan_firsatlar = []
         
