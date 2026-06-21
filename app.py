@@ -13,7 +13,7 @@ warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v7.0", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v8.0", page_icon="🤖", layout="wide")
 
 # --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
 def sifre_kontrol():
@@ -61,10 +61,10 @@ class BotConfig:
         self.komisyon = komisyon
         self.slippage = slippage
 
-# --- 2. ÇİFT MOTORLU VERİ VE DUYGU ANALİZİ (YF + İŞ YATIRIM YEDEKLİ) ---
+# --- 2. HAKİKİ QUANTAMENTAL VERİ VE DUYGU ANALİZİ (HABER DESTEKLİ) ---
 class DataFetcher:
     @staticmethod
-    @st.cache_data(ttl=1800, show_spinner=False)
+    @st.cache_data(ttl=1200, show_spinner=False)
     def veri_indir(hisse_kodu):
         # --- BİRİNCİL DENEME: YAHOO FINANCE ---
         try:
@@ -82,7 +82,10 @@ class DataFetcher:
                 son_hacim_degisimi = gunluk_veri['Volume'].pct_change().iloc[-1]
                 duygu_skoru = np.clip(son_hacim_degisimi * 100, -100, 100)
                 
-                return gunluk_veri, haftalik_veri, temel_veriler, duygu_skoru
+                # --- CANLI HABER VE KAP ANALİZİ (NLP MOTORU) ---
+                haber_skoru, haber_durumu = DataFetcher.haber_duygu_analizi(ticker)
+                
+                return gunluk_veri, haftalik_veri, temel_veriler, duygu_skoru, haber_skoru, haber_durumu
         except Exception as e:
             logging.warning(f"YFinance hatası ({hisse_kodu}). Yedek sisteme geçiliyor...")
 
@@ -109,7 +112,7 @@ class DataFetcher:
                 gunluk_veri = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
                 
                 if len(gunluk_veri) < 60:
-                    return None, None, None, None
+                    return None, None, None, None, None, None
                     
                 haftalik_veri = gunluk_veri.resample('W').agg({
                     'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
@@ -119,17 +122,50 @@ class DataFetcher:
                 son_hacim_degisimi = gunluk_veri['Volume'].pct_change().iloc[-1] if len(gunluk_veri) > 1 else 0
                 duygu_skoru = np.clip(son_hacim_degisimi * 100, -100, 100)
                 
-                return gunluk_veri, haftalik_veri, temel_veriler, duygu_skoru
+                return gunluk_veri, haftalik_veri, temel_veriler, duygu_skoru, 0, "Yedek Motor (Haber Yok)"
                 
         except Exception as e:
             logging.error(f"Tüm veri kaynakları başarısız oldu ({hisse_kodu}): {e}")
             
-        return None, None, None, None
+        return None, None, None, None, None, None
+
+    @staticmethod
+    def haber_duygu_analizi(ticker_obj):
+        """Hisseye ait son haber ve KAP başlıklarını tarayarak finansal duygu skoru üretir"""
+        try:
+            haberler = ticker_obj.news
+            if not haberler:
+                return 0, "Nötr / Gündem Sakin"
+            
+            # Kurumsal Finansal Kelime Dağarcığı (NLP Filtresi)
+            pozitif_kelimeler = ['kar', 'kâr', 'kazanc', 'kazanç', 'buyume', 'büyüme', 'rekor', 'ihracat', 'anlasma', 'anlaşma', 'ortaklik', 'ortaklık', 'pozitif', 'kap', 'buy', 'profit', 'growth', 'bullish', 'upgrade', 'contract', 'revenue']
+            negatif_kelimeler = ['zarar', 'kayip', 'kayıp', 'dusus', 'düşüş', 'risk', 'iptal', 'ceza', 'dava', 'sorusturma', 'soruşturma', 'negatif', 'sell', 'loss', 'drop', 'bearish', 'downgrade', 'decline', 'deficit', 'fine']
+            
+            toplam_skor = 0
+            analiz_edilen_haber_sayisi = 0
+            
+            for haber in haberler[:5]: # En güncel 5 haberi tara
+                baslik = haber.get('title', '').lower()
+                pos_puan = sum(1 for kelime in pozitif_kelimeler if kelime in baslik)
+                neg_puan = sum(1 for kelime in negatif_kelimeler if kelime in baslik)
+                
+                toplam_skor += (pos_puan - neg_puan) * 25
+                analiz_edilen_haber_sayisi += 1
+                
+            if analiz_edilen_haber_sayisi == 0: 
+                return 0, "Nötr"
+                
+            net_duygu = np.clip(toplam_skor / analiz_edilen_haber_sayisi, -100, 100)
+            
+            if net_duygu > 15: return round(net_duygu, 1), "🔥 Pozitif Gündem"
+            elif net_duygu < -15: return round(net_duygu, 1), "⚠️ Olumsuz Gündem"
+            else: return 0, "⚪ Dengeli / Nötr"
+        except:
+            return 0, "Haber Filtresi Devre Dışı"
 
     @staticmethod
     @st.cache_data(ttl=3600, show_spinner=False)
     def piyasa_rejimi_kontrol():
-        """BIST 100 trendine bakarak genel piyasa rejimini belirler (Boğa / Ayı)"""
         try:
             bist = yf.Ticker("XU100.IS")
             df = bist.history(period="1y", interval="1d")
@@ -140,9 +176,9 @@ class DataFetcher:
                 return "BULL" if son_kapanis > son_sma200 else "BEAR"
         except:
             pass
-        return "BULL" # Hata durumunda nötr kalmak için Boğa kabul edilir
+        return "BULL"
 
-# --- 3. TEKNİK VE MAKİNE ÖĞRENMESİ (GELİŞMİŞ ÖZELLİKLER) ---
+# --- 3. TEKNİK VE MAKİNE ÖĞRENMESİ ---
 class QuantModel:
     @staticmethod
     def gostergeleri_hesapla(df):
@@ -161,8 +197,7 @@ class QuantModel:
         df['Z_Score'] = (kapanis - df['SMA_20']) / df['Std_Dev']
         df['Highest_10'] = yuksek.rolling(window=10).max()
         
-        # ML Modeli için Gelişmiş Özellik Mühendisliği (Doğruluğu artırır)
-        df['Vol_Pct'] = df['Volume'].pct_change() # Ham hacim yerine hacim değişim oranı
+        df['Vol_Pct'] = df['Volume'].pct_change() 
         df['Return'] = df['Close'].pct_change()
         
         df.dropna(inplace=True)
@@ -175,7 +210,6 @@ class QuantModel:
             veri['Hedef'] = np.where(veri['Close'].shift(-1) > veri['Close'], 1, 0)
             veri.dropna(inplace=True)
             
-            # Normalize edilmiş ve kararlı özellik seti
             ozellikler = ['RSI', 'MACD_Line', 'ADX', 'Z_Score', 'Vol_Pct', 'Return']
             X = veri[ozellikler]
             y = veri['Hedef']
@@ -245,7 +279,7 @@ class Backtester:
         
         return round(win_rate * 100, 1), round(getiri_yuzdesi, 1), toplam_islem, ortalama_kazanc / ortalama_kayip
 
-# --- 5. STRATEJİ MOTORU (KURUMSAL FİLTRELİ) ---
+# --- 5. STRATEJİ MOTORU (KANTİTATİF + TEMEL/HABER BİRLEŞİMİ) ---
 class QuantStrategy:
     def __init__(self, config):
         self.config = config
@@ -258,7 +292,7 @@ class QuantStrategy:
         return min(max(0, kelly_yuzdesi / 2), 0.10) 
 
     def analiz_et(self, hisse_kodu):
-        gunluk, haftalik, temel, duygu_skoru = DataFetcher.veri_indir(hisse_kodu)
+        gunluk, haftalik, temel, duygu_skoru, haber_skoru, haber_durumu = DataFetcher.veri_indir(hisse_kodu)
         if gunluk is None: return None
             
         gunluk = QuantModel.gostergeleri_hesapla(gunluk)
@@ -271,34 +305,42 @@ class QuantStrategy:
         fiyat = float(son_gun['Close'])
         rsi = float(son_gun['RSI'])
         
+        # --- QUANTAMENTAL PUANLAMA SİSTEMİ ---
         skor = 0
         nedenler = []
         
-        # 1. Yapay Zeka Katkısı
-        if ml_olasilik > 65: skor += 30; nedenler.append(f"AI: %{ml_olasilik} Boğa")
-        elif ml_olasilik < 40: skor -= 25
-            
-        # 2. Teknik Göstergeler
-        if duygu_skoru > 20: skor += 10
+        # 1. Teknik Analiz ve ML Bacağı
+        if ml_olasilik > 65: skor += 25; nedenler.append(f"AI: %{ml_olasilik} Boğa")
         if son_gun['MACD_Line'] > son_gun['MACD_Signal']: skor += 15
-        if son_gun['Z_Score'] > 2.3: skor -= 30; nedenler.append("Aşırı Şişme (Z)")
         if win_rate > 55: skor += 15
+        if son_gun['Z_Score'] > 2.3: skor -= 25; nedenler.append("Fiyat Şişkin (Z)")
+            
+        # 2. Haber ve KAP Akışı Bacağı (Terazi Dengesi)
+        if haber_skoru > 20:
+            skor += 20
+            nedenler.append("Güçlü KAP/Haber Desteği")
+        elif haber_skoru < -20:
+            skor -= 30
+            nedenler.append("Riskli Haber Akışı")
         
-        # 3. Piyasa Rejimi Koruması
+        # 3. Genel Endeks Filtresi
         piyasa = DataFetcher.piyasa_rejimi_kontrol()
         if piyasa == "BEAR":
-            skor -= 20
-            nedenler.append("BIST Ayı Piyasası Baskısı")
+            skor -= 15
+            nedenler.append("BIST Endeks Baskısı")
         
         skor = max(0, min(skor, 100))
         
+        # Sinyal Sınıflandırması
         if skor >= 80: karar = "🔥 KESİN AL"
         elif skor >= 60: karar = "🟢 POTANSİYEL AL"
         elif skor <= 30 or rsi > self.config.rsi_sat: karar = "🔴 SAT / RİSKLİ"
         else: karar = "⚪ İZLEMEDE"
             
+        # Dinamik Portföy Risk Yönetimi
         kelly_orani = self.kelly_kriteri_hesapla(win_rate, risk_odul)
-        if piyasa == "BEAR": kelly_orani = kelly_orani / 2
+        if piyasa == "BEAR" or haber_skoru < -15: 
+            kelly_orani = kelly_orani / 2 # Riskli durumlarda alım miktarını yarıya indir
             
         lot_sayisi = int((self.config.sermaye * kelly_orani) / fiyat) if "AL" in karar else 0
             
@@ -307,7 +349,7 @@ class QuantStrategy:
             "Karar": karar, 
             "AI Tahmini": f"%{ml_olasilik}",
             "Skor": f"%{skor}",
-            "Net Getiri (2Y)": f"%{getiri}",
+            "Gündem": haber_durumu,
             "Win Rate": f"%{win_rate}",
             "Fiyat (₺)": round(fiyat, 2), 
             "Kelly Lotu": lot_sayisi,
@@ -316,8 +358,8 @@ class QuantStrategy:
 
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("🧠 YZ Destekli Hedge Fon Botu v7.0")
-    st.markdown("BIST 100 Katılım Radarı, Yapay Zeka Özellik Mühendisliği ve Piyasa Filtresi Entegre Edildi.")
+    st.title("🧠 YZ Destekli Hedge Fon Botu v8.0")
+    st.markdown("BIST 100 Katılım Radarı, Canlı KAP/Haber Yapay Zekası ve Piyasa Filtresi Entegre Edildi.")
     st.markdown("---")
 
     # --- YAN MENÜ ---
@@ -332,13 +374,13 @@ def ui_olustur():
     # Piyasa Rejimi Durum Çubuğu
     piyasa_durumu = DataFetcher.piyasa_rejimi_kontrol()
     if piyasa_durumu == "BULL":
-        st.sidebar.success("📊 BIST Endeks Trendi: BOĞA (Güvenli)")
+        st.sidebar.success("📊 BIST Genel Trendi: BOĞA (Güvenli)")
     else:
-        st.sidebar.warning("⚠️ BIST Endeks Trendi: AYI (Yüksek Risk)")
+        st.sidebar.warning("⚠️ BIST Genel Trendi: AYI (Yüksek Risk)")
 
     # --- 1. MANUEL TARAMA BÖLÜMÜ ---
     st.sidebar.markdown("### 🔍 Manuel Tarama")
-    varsayilan_hisseler = "YEOTK\nASELS\nTUPRS\nMPARK\nYUNSA\nBIMAS\nLOGO"
+    varsayilan_hisseler = "THYAO\nASELS\nTUPRS\nMPARK\nYUNSA\nBIMAS\nDOAS"
     hisseler_metin = st.sidebar.text_area("Taranacak Hisseler:", varsayilan_hisseler, height=140)
 
     if st.sidebar.button("🚀 Manuel Analizi Başlat", use_container_width=True):
@@ -367,7 +409,7 @@ def ui_olustur():
 
     # --- 2. OTOMATİK FIRSAT RADARI ---
     st.markdown("### 📡 Otomatik Fırsat Radarı (BIST 100 Katılım Endeksi)")
-    st.markdown("Sistem arka planda katılım endeksindeki tahtaları **Eşzamanlı (Paralel)** tarar ve **AL (Skor $\geq$ %60)** seviyesine ulaşanları yakalar.")
+    st.markdown("Sistem katılım endeksindeki tahtaları **Eşzamanlı** tarar, teknik veriler ile **güncel haber duygu skorunu** harmanlayarak fırsatları listeler.")
 
     if st.button("🔍 Katılım Endeksi Eşzamanlı Radarını Çalıştır", use_container_width=True):
         bist_katilim_hisseler = [
@@ -380,7 +422,7 @@ def ui_olustur():
             "YEOTK.IS", "YUNSA.IS"
         ]
         
-        st.info("Eşzamanlı Çoklu İş parçacığı (Multithreading) Motoru Aktif Edildi. 40 Ağır Tahta Aynı Anda Taranıyor...")
+        st.info("Eşzamanlı Çoklu İş Parçacığı Motoru Aktif. Teknik Göstergeler ve KAP/Gündem Akışları Eşzamanlı İnceleniyor...")
         
         bulunan_firsatlar = []
         
@@ -391,7 +433,7 @@ def ui_olustur():
                     bulunan_firsatlar.append(sonuc)
         
         if bulunan_firsatlar:
-            st.success(f"🚨 Tarama Tamamlandı: Filtrelere ve Piyasa Rejimine Uyan {len(bulunan_firsatlar)} Adet Sinyal Yakalandı!")
+            st.success(f"🚨 Tarama Tamamlandı: Hem Teknik Filtrelerden Geçen Hem de Gündemi Güçlü {len(bulunan_firsatlar)} Adet Sinyal Yakalandı!")
             
             sutunlar = st.columns(min(len(bulunan_firsatlar), 4))
             for idx, firsat in enumerate(bulunan_firsatlar):
@@ -404,13 +446,14 @@ def ui_olustur():
                         <p style="text-align: center; font-size: 18px;"><b>{firsat['Fiyat (₺)']} ₺</b></p>
                         <p style="text-align: center; font-size: 14px; background-color: #1b5e20; border-radius: 5px; padding: 3px;">{firsat['Karar']}</p>
                         <hr style="border-color: #4caf50;">
-                        <p style="font-size: 14px;"><b>Yapay Zeka:</b> {firsat['AI Tahmini']}</p>
-                        <p style="font-size: 14px;"><b>Win Rate:</b> {firsat['Win Rate']}</p>
+                        <p style="font-size: 13px;"><b>Gündem Analizi:</b> {firsat['Gündem']}</p>
+                        <p style="font-size: 13px;"><b>Yapay Zeka Yönü:</b> {firsat['AI Tahmini']}</p>
+                        <p style="font-size: 13px;"><b>Tarihsel Win Rate:</b> {firsat['Win Rate']}</p>
                         <p style="font-size: 12px; color: #a5d6a7;"><i>{firsat['Nedenler']}</i></p>
                     </div>
                     """, unsafe_allow_html=True)
         else:
-            st.warning("Mevcut kurumsal risk ve piyasa filtrelerinden geçebilen güçlü bir fırsat yakalanamadı.")
+            st.warning("Kurumsal risk filtrelerinden ve haber duygu barajından geçebilen güçlü bir fırsat bulunamadı.")
 
 if __name__ == "__main__":
     ui_olustur()
