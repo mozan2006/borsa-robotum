@@ -5,6 +5,8 @@ import numpy as np
 import ta
 import warnings
 import logging
+import requests
+import datetime
 from sklearn.ensemble import RandomForestClassifier
 
 warnings.filterwarnings('ignore')
@@ -59,36 +61,70 @@ class BotConfig:
         self.komisyon = komisyon
         self.slippage = slippage
 
-# --- 2. VERİ VE DUYGU ANALİZİ ---
+# --- 2. ÇİFT MOTORLU VERİ VE DUYGU ANALİZİ (YF + İŞ YATIRIM YEDEKLİ) ---
 class DataFetcher:
     @staticmethod
-    @st.cache_data(ttl=3600, show_spinner=False) # Verileri 1 saat önbellekte tutar
+    @st.cache_data(ttl=3600, show_spinner=False)
     def veri_indir(hisse_kodu):
+        # --- BİRİNCİL DENEME: YAHOO FINANCE ---
         try:
             ticker = yf.Ticker(hisse_kodu)
             gunluk_veri = ticker.history(period="2y", interval="1d")
             
-            # Günlük veri yetersizse hiç başlama
-            if gunluk_veri.empty or len(gunluk_veri) < 60: 
-                return None, None, None, None
+            if not gunluk_veri.empty and len(gunluk_veri) >= 60:
+                haftalik_veri = ticker.history(period="5y", interval="1wk")
+                info = ticker.info
+                temel_veriler = {
+                    'fk': info.get('trailingPE', None),
+                    'pd_dd': info.get('priceToBook', None),
+                    'roe': info.get('returnOnEquity', None)
+                }
+                son_hacim_degisimi = gunluk_veri['Volume'].pct_change().iloc[-1]
+                duygu_skoru = np.clip(son_hacim_degisimi * 100, -100, 100)
                 
-            # Haftalık veriyi al, yoksa veya eksikse sistemi durdurma
-            haftalik_veri = ticker.history(period="5y", interval="1wk")
-            
-            info = ticker.info
-            temel_veriler = {
-                'fk': info.get('trailingPE', None),
-                'pd_dd': info.get('priceToBook', None),
-                'roe': info.get('returnOnEquity', None)
-            }
-            
-            son_hacim_degisimi = gunluk_veri['Volume'].pct_change().iloc[-1]
-            duygu_skoru = np.clip(son_hacim_degisimi * 100, -100, 100)
-            
-            return gunluk_veri, haftalik_veri, temel_veriler, duygu_skoru
+                return gunluk_veri, haftalik_veri, temel_veriler, duygu_skoru
         except Exception as e:
-            logging.error(f"Veri çekme hatası ({hisse_kodu}): {e}")
-            return None, None, None, None
+            logging.warning(f"YFinance hatası ({hisse_kodu}). Yedek sisteme geçiliyor...")
+
+        # --- İKİNCİL DENEME (FALLBACK): İŞ YATIRIM API ---
+        try:
+            sembol = hisse_kodu.replace(".IS", "")
+            bitis_tarihi = datetime.datetime.now().strftime("%d-%m-%Y")
+            baslangic_tarihi = (datetime.datetime.now() - datetime.timedelta(days=730)).strftime("%d-%m-%Y")
+            
+            url = f"https://www.isyatirim.com.tr/_layouts/15/IsYatirim.Website/Common/Data.aspx/HisseTekil?hisse={sembol}&startdate={baslangic_tarihi}&enddate={bitis_tarihi}"
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            
+            response = requests.get(url, headers=headers, timeout=10)
+            veri_json = response.json()
+            
+            if 'value' in veri_json and veri_json['value']:
+                df = pd.DataFrame(veri_json['value'])
+                df['Date'] = pd.to_datetime(df['HGDG_TARIH'], format='%d-%m-%Y')
+                df.set_index('Date', inplace=True)
+                
+                df.rename(columns={'KAPANIS': 'Close', 'MAX': 'High', 'MIN': 'Low', 'ISLEM_MIKTARI': 'Volume'}, inplace=True)
+                df['Open'] = df['Close'].shift(1).fillna(df['Close'])
+                
+                gunluk_veri = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
+                
+                if len(gunluk_veri) < 60:
+                    return None, None, None, None
+                    
+                haftalik_veri = gunluk_veri.resample('W').agg({
+                    'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+                })
+                
+                temel_veriler = {'fk': None, 'pd_dd': None, 'roe': None}
+                son_hacim_degisimi = gunluk_veri['Volume'].pct_change().iloc[-1] if len(gunluk_veri) > 1 else 0
+                duygu_skoru = np.clip(son_hacim_degisimi * 100, -100, 100)
+                
+                return gunluk_veri, haftalik_veri, temel_veriler, duygu_skoru
+                
+        except Exception as e:
+            logging.error(f"Tüm veri kaynakları başarısız oldu ({hisse_kodu}): {e}")
+            
+        return None, None, None, None
 
 # --- 3. TEKNİK VE MAKİNE ÖĞRENMESİ ---
 class QuantModel:
@@ -109,7 +145,6 @@ class QuantModel:
         df['Z_Score'] = (kapanis - df['SMA_20']) / df['Std_Dev']
         df['Highest_10'] = yuksek.rolling(window=10).max()
         
-        # 50 günlük ortalama hesabı nedeniyle ilk 50 gün NaN olur, siliyoruz.
         df.dropna(inplace=True)
         return df
 
@@ -137,7 +172,6 @@ class QuantModel:
 class Backtester:
     @staticmethod
     def gercekci_test(df, komisyon_orani, slippage_orani, config):
-        # Dropna yapıldığı için df uzunluğu üzerinden direkt kontrole geçiyoruz
         if df is None or len(df) < 10: return 0, 0, 0, 0
         
         baslangic = 100000
@@ -153,13 +187,11 @@ class Backtester:
         kayip_toplami = 0
         toplam_islem = 0
         
-        # DataFrame baştan temizlendiği için 1. indexten başlıyoruz
         for i in range(1, len(df)):
             row = df.iloc[i]
             
             al_sinyali = (row['Close'] > row['SMA_50']) and (row['MACD_Line'] > row['MACD_Signal'])
             
-            # Dinamik Stop ve Kar-Al Yönetimi
             if pozisyon_acik:
                 if row['Low'] <= stop_fiyati or row['High'] >= kar_al_fiyati or row['RSI'] > config.rsi_sat or (row['MACD_Line'] < row['MACD_Signal']):
                     satis_fiyati = kar_al_fiyati if row['High'] >= kar_al_fiyati else (stop_fiyati if row['Low'] <= stop_fiyati else row['Close'])
@@ -182,7 +214,6 @@ class Backtester:
                 alinan_lot = sermaye / gercek_alim_fiyati
                 alinan_fiyat = gercek_alim_fiyati
                 
-                # ATR Çarpanları ile Stop/Kar Belirleme
                 stop_fiyati = gercek_alim_fiyati - (row['ATR'] * config.atr_stop)
                 kar_al_fiyati = gercek_alim_fiyati + (row['ATR'] * config.atr_kar)
                 pozisyon_acik = True
@@ -235,7 +266,6 @@ class QuantStrategy:
         
         skor = max(0, min(skor, 100))
         
-        # Skor kararları 
         if skor >= 80: karar = "🔥 KESİN AL"
         elif skor >= 60: karar = "🟢 POTANSİYEL AL"
         elif skor <= 30 or rsi > self.config.rsi_sat: karar = "🔴 SAT / RİSKLİ"
@@ -301,7 +331,7 @@ def ui_olustur():
                 
             st.dataframe(df.style.map(tablo_renk, subset=['Karar']), use_container_width=True)
         else:
-            st.error("Veri işlenemedi. Yahoo Finance geçici olarak yanıt vermiyor olabilir.")
+            st.error("Veri işlenemedi. Yahoo Finance ve İş Yatırım geçici olarak yanıt vermiyor olabilir.")
 
     # --- 2. OTOMATİK FIRSAT RADARI ---
     st.markdown("### 📡 Otomatik Fırsat Radarı (BIST 100 Katılım Endeksi)")
@@ -319,13 +349,12 @@ def ui_olustur():
             "YEOTK.IS", "YUNSA.IS"
         ]
         
-        st.info("BIST 100 Katılım hisseleri taranıyor. Cache sistemi sayesinde ikinci taramalar anında gerçekleşecektir...")
+        st.info("BIST 100 Katılım hisseleri taranıyor. Önbellek sistemi sayesinde ardışık taramalar anında gerçekleşecektir...")
         radar_ilerleme = st.progress(0)
         bulunan_firsatlar = []
         
         for i, hisse in enumerate(bist_katilim_hisseler):
             sonuc = strateji.analiz_et(hisse)
-            # AL sinyali içerenleri (Kesin Al & Potansiyel Al) yakalıyoruz (Skor >= 60 şartını Karar metni sağlıyor)
             if sonuc and ("AL" in sonuc["Karar"]):
                 bulunan_firsatlar.append(sonuc)
             radar_ilerleme.progress((i + 1) / len(bist_katilim_hisseler))
@@ -338,7 +367,6 @@ def ui_olustur():
             sutunlar = st.columns(min(len(bulunan_firsatlar), 4))
             for idx, firsat in enumerate(bulunan_firsatlar):
                 with sutunlar[idx % 4]:
-                    
                     renk_kodu = "#1e4620" if "KESİN" in firsat["Karar"] else "#2e7d32"
                     
                     st.markdown(f"""
