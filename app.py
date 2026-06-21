@@ -13,7 +13,7 @@ warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v8.3", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v8.4", page_icon="🤖", layout="wide")
 
 # --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
 def sifre_kontrol():
@@ -187,7 +187,6 @@ class QuantModel:
         df['Z_Score'] = (kapanis - df['SMA_20']) / df['Std_Dev']
         df['Highest_10'] = yuksek.rolling(window=10).max()
         
-        # Uzun Vadeli Trend Analizleri (Yeni Halka Arzlar için min_periods=1 ile korumalı)
         df['SMA_100'] = kapanis.rolling(window=100, min_periods=1).mean()
         df['SMA_200'] = kapanis.rolling(window=200, min_periods=1).mean()
         
@@ -273,7 +272,7 @@ class Backtester:
         
         return round(win_rate * 100, 1), round(getiri_yuzdesi, 1), toplam_islem, ortalama_kazanc / ortalama_kayip
 
-# --- 5. STRATEJİ MOTORU (DÜŞEN BIÇAK KORUMALI) ---
+# --- 5. STRATEJİ MOTORU (DÜŞEN BIÇAK KORUMALI & DİNAMİK FİYAT SEVİYELİ) ---
 class QuantStrategy:
     def __init__(self, config):
         self.config = config
@@ -300,15 +299,21 @@ class QuantStrategy:
         rsi = float(son_gun['RSI'])
         sma_200 = float(son_gun['SMA_200'])
         sma_100 = float(son_gun['SMA_100'])
+        atr = float(son_gun['ATR'])
+        
+        # --- DİNAMİK AL, STOP VE KAR AL HESAPLAMALARI (ATR TABANLI) ---
+        al_fiyati = fiyat # Güncel kapanış mum seviyesi giriş kabul edilir
+        stop_fiyati = al_fiyati - (atr * self.config.atr_stop)
+        kar_fiyati = al_fiyati + (atr * self.config.atr_kar)
         
         skor = 50 
         nedenler = []
         
-        # 1. KRONİK DÜŞÜŞ VE "ÖLÜ KEDİ SIÇRAMASI" FİLTRESİ (Zehirli Varlık Engeli)
+        # 1. Kronik Düşüş Filtresi
         if fiyat < sma_200:
             fark_yuzde = ((sma_200 - fiyat) / sma_200) * 100
             if fark_yuzde > 20: 
-                skor -= 40 # Hissenin "AL" vermesini kesinlikle önleyen ölümcül ceza
+                skor -= 40 
                 nedenler.append("KRONİK DÜŞÜŞ (Zehirli)")
             else:
                 skor -= 15
@@ -323,22 +328,21 @@ class QuantStrategy:
         elif ml_olasilik < 40: 
             skor -= 10
             
-        # 3. Kısa Vadeli Trend (MACD ve RSI)
+        # 3. Kısa Vadeli Trend
         if son_gun['MACD_Line'] > son_gun['MACD_Signal']: 
             skor += 10
         else:
             skor -= 10
             
-        if rsi < 40 and fiyat > sma_200: # RSI Dibi sadece yükseliş trendindeyse anlamlıdır
+        if rsi < 40 and fiyat > sma_200: 
             skor += 10; nedenler.append("Trend İçi Dip Fırsatı")
             
-        # 4. İstatistik ve Z-Skoru (Aşırı Alım/Satım)
+        # 4. İstatistik ve Z-Skoru
         if win_rate > 55: skor += 10
-        
         if son_gun['Z_Score'] > 2.0: 
             skor -= 15; nedenler.append("Aşırı Şişkinlik (Z)")
             
-        # 5. Haber ve KAP Akışı Dengesi
+        # 5. Haber ve KAP Akışı
         if haber_skoru > 15:
             skor += 15; nedenler.append("Güçlü KAP/Haber")
         elif haber_skoru < -15:
@@ -369,16 +373,19 @@ class QuantStrategy:
             "AI Tahmini": f"%{ml_olasilik}",
             "Skor": f"%{skor}",
             "Gündem": haber_durumu,
-            "Win Rate": f"%{win_rate}",
             "Fiyat (₺)": round(fiyat, 2), 
+            "Dinamik Al (₺)": round(al_fiyati, 2),
+            "Stop-Loss (₺)": round(stop_fiyati, 2),
+            "Kar Al (₺)": round(kar_fiyati, 2),
             "Kelly Lotu": lot_sayisi,
+            "Win Rate": f"%{win_rate}",
             "Nedenler": " | ".join(nedenler[:3]) if nedenler else "Yatay / Stabil"
         }
 
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("🧠 YZ Destekli Katılım Fonu Botu v8.3")
-    st.markdown("Uzun Vadeli Trend Koruması (SMA200) Eklendi. Artık düşen hisseler (Zehirli Varlıklar) radara yakalanmaz.")
+    st.title("🧠 YZ Destekli Katılım Fonu Botu v8.4")
+    st.markdown("Uzun Vadeli Trend Koruması ve ATR Tabanlı Dinamik Al / Stop-Loss / Kâr Al Seviyeleri Eklendi.")
     st.markdown("---")
 
     # --- YAN MENÜ ---
@@ -429,7 +436,7 @@ def ui_olustur():
 
     # --- 2. OTOMATİK FIRSAT RADARI ---
     st.markdown("### 📡 Otomatik Fırsat Radarı (Sadece Katılım Endeksi)")
-    st.markdown("Sistem BIST 100 Katılım (XK100) tahtalarını eşzamanlı tarar. Kronik düşüşteki hisseleri eler, momentumu yüksek gerçek fırsatları bulur.")
+    st.markdown("Sistem BIST 100 Katılım (XK100) tahtalarını eşzamanlı tarar. Net Al/Sat seviyelerini, stop sınırlarını ve Kelly lotunu hesaplar.")
 
     if st.button("🔍 Katılım Endeksi Eşzamanlı Radarını Çalıştır", use_container_width=True):
         bist_katilim_hisseler = [
@@ -442,7 +449,7 @@ def ui_olustur():
             "TUKAS.IS", "VESBE.IS", "YEOTK.IS", "YUNSA.IS"
         ]
         
-        st.info("Eşzamanlı Tarama Aktif. Uzun Vadeli Trend Koruması (SMA200) Devrede...")
+        st.info("Eşzamanlı Tarama Aktif. Grafik Çizgileri ve Akıllı Emir Seviyeleri Hesaplanıyor...")
         
         bulunan_firsatlar = []
         
@@ -453,7 +460,7 @@ def ui_olustur():
                     bulunan_firsatlar.append(sonuc)
         
         if bulunan_firsatlar:
-            st.success(f"🚨 Tarama Tamamlandı: Sağlıklı Kriterlere Uyan {len(bulunan_firsatlar)} Adet 'AL' Sinyali Yakalandı!")
+            st.success(f"🚨 Tarama Tamamlandı: Sağlıklı Kriterlere Uyan {len(bulunan_firsatlar)} Adet Sinyal Yakalandı!")
             
             sutunlar = st.columns(min(len(bulunan_firsatlar), 4))
             for idx, firsat in enumerate(bulunan_firsatlar):
@@ -463,13 +470,15 @@ def ui_olustur():
                     <div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: {renk_kodu}; color: white; margin-bottom: 10px;">
                         <h2 style="text-align: center; color: #4caf50; margin-top: 0;">{firsat['Hisse']}</h2>
                         <h1 style="text-align: center; margin: 0;">{firsat['Skor']}</h1>
-                        <p style="text-align: center; font-size: 18px;"><b>{firsat['Fiyat (₺)']} ₺</b></p>
-                        <p style="text-align: center; font-size: 14px; background-color: #1b5e20; border-radius: 5px; padding: 3px;">{firsat['Karar']}</p>
-                        <hr style="border-color: #4caf50;">
-                        <p style="font-size: 13px;"><b>Gündem Analizi:</b> {firsat['Gündem']}</p>
-                        <p style="font-size: 13px;"><b>Yapay Zeka Yönü:</b> {firsat['AI Tahmini']}</p>
-                        <p style="font-size: 13px;"><b>Tarihsel Win Rate:</b> {firsat['Win Rate']}</p>
-                        <p style="font-size: 12px; color: #a5d6a7;"><i>{firsat['Nedenler']}</i></p>
+                        <p style="text-align: center; font-size: 15px; background-color: #1b5e20; border-radius: 5px; padding: 3px;"><b>{firsat['Karar']}</b></p>
+                        <hr style="border-color: #4caf50; margin-bottom: 8px; margin-top: 8px;">
+                        <p style="font-size: 14px; margin: 3px 0;"><b>🔵 Dinamik Al:</b> {firsat['Dinamik Al (₺)']} ₺</p>
+                        <p style="font-size: 14px; margin: 3px 0; color: #ff8a80;"><b>🔴 Stop-Loss:</b> {firsat['Stop-Loss (₺)']} ₺</p>
+                        <p style="font-size: 14px; margin: 3px 0; color: #b9f6ca;"><b>🟢 Kâr Al Target:</b> {firsat['Kar Al (₺)']} ₺</p>
+                        <hr style="border-color: #4caf50; margin-bottom: 8px; margin-top: 8px;">
+                        <p style="font-size: 13px; margin: 2px 0;"><b>Gündem:</b> {firsat['Gündem']}</p>
+                        <p style="font-size: 13px; margin: 2px 0;"><b>Yapay Zeka:</b> {firsat['AI Tahmini']}</p>
+                        <p style="font-size: 13px; margin: 2px 0;"><b>Kelly Lotu:</b> {firsat['Kelly Lotu']} Lot</p>
                     </div>
                     """, unsafe_allow_html=True)
         else:
