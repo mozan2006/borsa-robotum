@@ -416,4 +416,3 @@ def ui_olustur():
 
 if __name__ == "__main__":
     ui_olustur()
-                
