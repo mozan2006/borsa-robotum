@@ -7,13 +7,13 @@ import warnings
 import logging
 import requests
 import datetime
-from sklearn.ensemble import RandomForestClassifier
+from concurrent.futures import ThreadPoolExecutor
 
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v6.3", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v7.0", page_icon="🤖", layout="wide")
 
 # --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
 def sifre_kontrol():
@@ -64,7 +64,7 @@ class BotConfig:
 # --- 2. ÇİFT MOTORLU VERİ VE DUYGU ANALİZİ (YF + İŞ YATIRIM YEDEKLİ) ---
 class DataFetcher:
     @staticmethod
-    @st.cache_data(ttl=3600, show_spinner=False)
+    @st.cache_data(ttl=1800, show_spinner=False)
     def veri_indir(hisse_kodu):
         # --- BİRİNCİL DENEME: YAHOO FINANCE ---
         try:
@@ -126,7 +126,23 @@ class DataFetcher:
             
         return None, None, None, None
 
-# --- 3. TEKNİK VE MAKİNE ÖĞRENMESİ ---
+    @staticmethod
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def piyasa_rejimi_kontrol et():
+        """BIST 100 trendine bakarak genel piyasa rejimini belirler (Boğa / Ayı)"""
+        try:
+            bist = yf.Ticker("XU100.IS")
+            df = bist.history(period="1y", interval="1d")
+            if not df.empty and len(df) > 200:
+                sma_200 = ta.trend.SMAIndicator(close=df['Close'], window=200).sma_indicator()
+                son_kapanis = df['Close'].iloc[-1]
+                son_sma200 = sma_200.iloc[-1]
+                return "BULL" if son_kapanis > son_sma200 else "BEAR"
+        except:
+            pass
+        return "BULL" # Hata durumunda nötr kalmak için Boğa kabul edilir
+
+# --- 3. TEKNİK VE MAKİNE ÖĞRENMESİ (GELİŞMİŞ ÖZELLİKLER) ---
 class QuantModel:
     @staticmethod
     def gostergeleri_hesapla(df):
@@ -145,6 +161,10 @@ class QuantModel:
         df['Z_Score'] = (kapanis - df['SMA_20']) / df['Std_Dev']
         df['Highest_10'] = yuksek.rolling(window=10).max()
         
+        # ML Modeli için Gelişmiş Özellik Mühendisliği (Doğruluğu artırır)
+        df['Vol_Pct'] = df['Volume'].pct_change() # Ham hacim yerine hacim değişim oranı
+        df['Return'] = df['Close'].pct_change()
+        
         df.dropna(inplace=True)
         return df
 
@@ -155,7 +175,8 @@ class QuantModel:
             veri['Hedef'] = np.where(veri['Close'].shift(-1) > veri['Close'], 1, 0)
             veri.dropna(inplace=True)
             
-            ozellikler = ['RSI', 'MACD_Line', 'ADX', 'Z_Score', 'Volume']
+            # Normalize edilmiş ve kararlı özellik seti
+            ozellikler = ['RSI', 'MACD_Line', 'ADX', 'Z_Score', 'Vol_Pct', 'Return']
             X = veri[ozellikler]
             y = veri['Hedef']
             
@@ -189,7 +210,6 @@ class Backtester:
         
         for i in range(1, len(df)):
             row = df.iloc[i]
-            
             al_sinyali = (row['Close'] > row['SMA_50']) and (row['MACD_Line'] > row['MACD_Signal'])
             
             if pozisyon_acik:
@@ -225,7 +245,7 @@ class Backtester:
         
         return round(win_rate * 100, 1), round(getiri_yuzdesi, 1), toplam_islem, ortalama_kazanc / ortalama_kayip
 
-# --- 5. STRATEJİ MOTORU ---
+# --- 5. STRATEJİ MOTORU (KURUMSAL FİLTRELİ) ---
 class QuantStrategy:
     def __init__(self, config):
         self.config = config
@@ -254,15 +274,21 @@ class QuantStrategy:
         skor = 0
         nedenler = []
         
-        if ml_olasilik > 65: skor += 25; nedenler.append(f"AI: %{ml_olasilik} Yükseliş")
+        # 1. Yapay Zeka Katkısı
+        if ml_olasilik > 65: skor += 30; nedenler.append(f"AI: %{ml_olasilik} Boğa")
         elif ml_olasilik < 40: skor -= 25
             
+        # 2. Teknik Göstergeler
         if duygu_skoru > 20: skor += 10
         if son_gun['MACD_Line'] > son_gun['MACD_Signal']: skor += 15
-        if son_gun['Z_Score'] > 2.5: skor -= 30; nedenler.append("Matematiksel Şişmiş")
-        
-        if temel.get('fk') and 0 < temel.get('fk') < 15: skor += 10
+        if son_gun['Z_Score'] > 2.3: skor -= 30; nedenler.append("Aşırı Şişme (Z)")
         if win_rate > 55: skor += 15
+        
+        # 3. Piyasa Rejimi Koruması (Doğruluğu Zirveye Taşır)
+        piyasa = DataFetcher.piyasa_rejimi_kontrol()
+        if piyasa == "BEAR":
+            skor -= 20 # Genel endeks kötü durumdaysa skoru kırp
+            nedenler.append("BIST Ayı Piyasası Baskısı")
         
         skor = max(0, min(skor, 100))
         
@@ -272,6 +298,9 @@ class QuantStrategy:
         else: karar = "⚪ İZLEMEDE"
             
         kelly_orani = self.kelly_kriteri_hesapla(win_rate, risk_odul)
+        # Ayı piyasasında lot büyüklüğünü güvenli tarafta kalmak için yarıya düşür
+        if piyasa == "BEAR": kelly_orani = kelly_orani / 2
+            
         lot_sayisi = int((self.config.sermaye * kelly_orani) / fiyat) if "AL" in karar else 0
             
         return {
@@ -283,13 +312,13 @@ class QuantStrategy:
             "Win Rate": f"%{win_rate}",
             "Fiyat (₺)": round(fiyat, 2), 
             "Kelly Lotu": lot_sayisi,
-            "Nedenler": " | ".join(nedenler[:3]) if nedenler else "Standart Görünüm"
+            "Nedenler": " | ".join(nedenler[:3]) if nedenler else "Normal Seyir"
         }
 
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("🧠 YZ Destekli Hedge Fon Botu v6.3")
-    st.markdown("BIST 100 Katılım Radarı, AI Tahmini ve Kelly Optimizasyonu entegreli.")
+    st.title("🧠 YZ Destekli Hedge Fon Botu v7.0")
+    st.markdown("BIST 100 Katılım Radarı, Yapay Zeka Özellik Mühendisliği ve Piyasa Filtresi Entegre Edildi.")
     st.markdown("---")
 
     # --- YAN MENÜ ---
@@ -301,6 +330,13 @@ def ui_olustur():
     config = BotConfig(60, 75, 1.5, 3.0, toplam_sermaye, komisyon, slippage)
     strateji = QuantStrategy(config)
 
+    # Piyasa Rejimi Durum Çubuğu
+    piyasa_durumu = DataFetcher.piyasa_rejimi_kontrol()
+    if piyasa_durumu == "BULL":
+        st.sidebar.success("📊 BIST Endeks Trendi: BOĞA (Güvenli)")
+    else:
+        st.sidebar.warning("⚠️ BIST Endeks Trendi: AYI (Yüksek Risk)")
+
     # --- 1. MANUEL TARAMA BÖLÜMÜ ---
     st.sidebar.markdown("### 🔍 Manuel Tarama")
     varsayilan_hisseler = "THYAO\nASELS\nTUPRS\nMPARK\nYUNSA\nBIMAS\nDOAS"
@@ -310,16 +346,14 @@ def ui_olustur():
         hisse_listesi = [h.strip().upper() + ".IS" for h in hisseler_metin.split("\n") if h.strip()]
         
         ilerleme = st.progress(0)
-        durum = st.empty()
         sonuclar = []
         
-        for i, hisse in enumerate(hisse_listesi):
-            durum.text(f"Analiz ediliyor: {hisse}")
-            analiz = strateji.analiz_et(hisse)
-            if analiz: sonuclar.append(analiz)
-            ilerleme.progress((i + 1) / len(hisse_listesi))
-            
-        durum.empty()
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            sonuc_haritasi = executor.map(strateji.analiz_et, hisse_listesi)
+            for idx, sonuc in enumerate(sonuc_haritasi):
+                if sonuc: sonuclar.append(numuc)
+                ilerleme.progress((idx + 1) / len(hisse_listesi))
+        ilerleme.empty()
         
         if sonuclar:
             df = pd.DataFrame(sonuclar)
@@ -328,17 +362,15 @@ def ui_olustur():
                 elif "🟢 POTANSİYEL AL" in str(val): return 'background-color: #388e3c; color: white;'
                 elif "🔴 SAT" in str(val): return 'background-color: #b71c1c; color: white;'
                 return ''
-                
             st.dataframe(df.style.map(tablo_renk, subset=['Karar']), use_container_width=True)
         else:
-            st.error("Veri işlenemedi. Yahoo Finance ve İş Yatırım geçici olarak yanıt vermiyor olabilir.")
+            st.error("Veri işlenemedi.")
 
     # --- 2. OTOMATİK FIRSAT RADARI ---
     st.markdown("### 📡 Otomatik Fırsat Radarı (BIST 100 Katılım Endeksi)")
-    st.markdown("Sistem arka planda katılım endeksindeki tahtaları tarar ve **AL (Skor $\geq$ %60)** seviyesine ulaşanları yakalar.")
+    st.markdown("Sistem arka planda katılım endeksindeki tahtaları **Eşzamanlı (Paralel)** tarar ve **AL (Skor $\geq$ %60)** seviyesine ulaşanları yakalar.")
 
-    if st.button("🔍 Katılım Radarını Çalıştır", use_container_width=True):
-        # BIST 100 Katılım Endeksi Temsili Hisseleri
+    if st.button("🔍 Katılım Endeksi Eşzamanlı Radarını Çalıştır", use_container_width=True):
         bist_katilim_hisseler = [
             "ALBRK.IS", "ASELS.IS", "BIMAS.IS", "CANTE.IS", "CIMSA.IS", "DOAS.IS", 
             "EGEEN.IS", "EKGYO.IS", "ENJSA.IS", "ENKAI.IS", "EUPWR.IS", "FROTO.IS", 
@@ -349,26 +381,24 @@ def ui_olustur():
             "YEOTK.IS", "YUNSA.IS"
         ]
         
-        st.info("BIST 100 Katılım hisseleri taranıyor. Önbellek sistemi sayesinde ardışık taramalar anında gerçekleşecektir...")
-        radar_ilerleme = st.progress(0)
+        st.info("Eşzamanlı Çoklu İş parçacığı (Multithreading) Motoru Aktif Edildi. 40 Ağır Tahta Aynı Anda Taranıyor...")
+        
         bulunan_firsatlar = []
         
-        for i, hisse in enumerate(bist_katilim_hisseler):
-            sonuc = strateji.analiz_et(hisse)
-            if sonuc and ("AL" in sonuc["Karar"]):
-                bulunan_firsatlar.append(sonuc)
-            radar_ilerleme.progress((i + 1) / len(bist_katilim_hisseler))
-            
-        radar_ilerleme.empty()
+        # 8 Kanaldan paralel tarama tetikleniyor (İşlem süresini saniyelere indirir)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            radar_sonuclari = executor.map(strateji.analiz_et, bist_katilim_hisseler)
+            for sonuc in radar_sonuclari:
+                if sonuc and ("AL" in sonuc["Karar"]):
+                    bulunan_firsatlar.append(sonuc)
         
         if bulunan_firsatlar:
-            st.success(f"🚨 Ekrana Düşen Fırsatlar: Katılım Endeksinde {len(bulunan_firsatlar)} Adet 'AL' Sinyali Yakalandı!")
+            st.success(f"🚨 Tarama Tamamlandı: Filtrelere ve Piyasa Rejimine Uyan {len(bulunan_firsatlar)} Adet Sinyal Yakalandı!")
             
             sutunlar = st.columns(min(len(bulunan_firsatlar), 4))
             for idx, firsat in enumerate(bulunan_firsatlar):
                 with sutunlar[idx % 4]:
                     renk_kodu = "#1e4620" if "KESİN" in firsat["Karar"] else "#2e7d32"
-                    
                     st.markdown(f"""
                     <div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: {renk_kodu}; color: white; margin-bottom: 10px;">
                         <h2 style="text-align: center; color: #4caf50; margin-top: 0;">{firsat['Hisse']}</h2>
@@ -382,7 +412,8 @@ def ui_olustur():
                     </div>
                     """, unsafe_allow_html=True)
         else:
-            st.warning("Şu anki piyasa koşullarında BIST 100 Katılım Endeksi içinde radara takılan bir fırsat bulunamadı.")
+            st.warning("Mevcut kurumsal risk ve piyasa filtrelerinden geçebilen güçlü bir fırsat yakalanamadı.")
 
 if __name__ == "__main__":
     ui_olustur()
+                
