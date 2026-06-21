@@ -5,15 +5,13 @@ import numpy as np
 import ta
 import warnings
 import logging
-import plotly.graph_objects as go
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v6.2", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v6.3", page_icon="🤖", layout="wide")
 
 # --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
 def sifre_kontrol():
@@ -64,14 +62,18 @@ class BotConfig:
 # --- 2. VERİ VE DUYGU ANALİZİ ---
 class DataFetcher:
     @staticmethod
+    @st.cache_data(ttl=3600, show_spinner=False) # Verileri 1 saat önbellekte tutar
     def veri_indir(hisse_kodu):
         try:
             ticker = yf.Ticker(hisse_kodu)
             gunluk_veri = ticker.history(period="2y", interval="1d")
-            haftalik_veri = ticker.history(period="5y", interval="1wk")
             
-            if gunluk_veri.empty or haftalik_veri.empty or len(haftalik_veri) < 50: 
+            # Günlük veri yetersizse hiç başlama
+            if gunluk_veri.empty or len(gunluk_veri) < 60: 
                 return None, None, None, None
+                
+            # Haftalık veriyi al, yoksa veya eksikse sistemi durdurma
+            haftalik_veri = ticker.history(period="5y", interval="1wk")
             
             info = ticker.info
             temel_veriler = {
@@ -106,6 +108,8 @@ class QuantModel:
         df['Std_Dev'] = kapanis.rolling(window=20).std()
         df['Z_Score'] = (kapanis - df['SMA_20']) / df['Std_Dev']
         df['Highest_10'] = yuksek.rolling(window=10).max()
+        
+        # 50 günlük ortalama hesabı nedeniyle ilk 50 gün NaN olur, siliyoruz.
         df.dropna(inplace=True)
         return df
 
@@ -129,45 +133,59 @@ class QuantModel:
         except:
             return 50.0
 
-# --- 4. BACKTEST (Slippage & Komisyon) ---
+# --- 4. BACKTEST (ATR, Slippage & Komisyon) ---
 class Backtester:
     @staticmethod
-    def gercekci_test(df, komisyon_orani, slippage_orani):
-        if df is None or len(df) < 50: return 0, 0, 0, 0
+    def gercekci_test(df, komisyon_orani, slippage_orani, config):
+        # Dropna yapıldığı için df uzunluğu üzerinden direkt kontrole geçiyoruz
+        if df is None or len(df) < 10: return 0, 0, 0, 0
         
         baslangic = 100000
         sermaye = baslangic
         pozisyon_acik = False
         alinan_fiyat = 0
+        stop_fiyati = 0
+        kar_al_fiyati = 0
+        alinan_lot = 0
+        
         basarili_islem = 0
         kazanc_toplami = 0
         kayip_toplami = 0
         toplam_islem = 0
         
-        for i in range(50, len(df)):
+        # DataFrame baştan temizlendiği için 1. indexten başlıyoruz
+        for i in range(1, len(df)):
             row = df.iloc[i]
-            al_sinyali = (row['Close'] > row['SMA_50']) and (row['MACD_Line'] > row['MACD_Signal'])
-            sat_sinyali = (row['RSI'] > 70) or (row['MACD_Line'] < row['MACD_Signal'])
             
-            if not pozisyon_acik and al_sinyali:
+            al_sinyali = (row['Close'] > row['SMA_50']) and (row['MACD_Line'] > row['MACD_Signal'])
+            
+            # Dinamik Stop ve Kar-Al Yönetimi
+            if pozisyon_acik:
+                if row['Low'] <= stop_fiyati or row['High'] >= kar_al_fiyati or row['RSI'] > config.rsi_sat or (row['MACD_Line'] < row['MACD_Signal']):
+                    satis_fiyati = kar_al_fiyati if row['High'] >= kar_al_fiyati else (stop_fiyati if row['Low'] <= stop_fiyati else row['Close'])
+                    gercek_satim_fiyati = satis_fiyati * (1 - slippage_orani)
+                    
+                    brut_sermaye = alinan_lot * gercek_satim_fiyati
+                    sermaye = brut_sermaye - (brut_sermaye * komisyon_orani)
+                    toplam_islem += 1
+                    
+                    if sermaye > (alinan_lot * alinan_fiyat): 
+                        basarili_islem += 1
+                        kazanc_toplami += (gercek_satim_fiyati - alinan_fiyat)
+                    else:
+                        kayip_toplami += (alinan_fiyat - gercek_satim_fiyati)
+                    pozisyon_acik = False
+                    
+            elif not pozisyon_acik and al_sinyali and row['RSI'] < config.rsi_al:
                 gercek_alim_fiyati = row['Close'] * (1 + slippage_orani)
                 sermaye -= (sermaye * komisyon_orani)
                 alinan_lot = sermaye / gercek_alim_fiyati
                 alinan_fiyat = gercek_alim_fiyati
+                
+                # ATR Çarpanları ile Stop/Kar Belirleme
+                stop_fiyati = gercek_alim_fiyati - (row['ATR'] * config.atr_stop)
+                kar_al_fiyati = gercek_alim_fiyati + (row['ATR'] * config.atr_kar)
                 pozisyon_acik = True
-                
-            elif pozisyon_acik and sat_sinyali:
-                gercek_satim_fiyati = row['Close'] * (1 - slippage_orani)
-                brut_sermaye = alinan_lot * gercek_satim_fiyati
-                sermaye = brut_sermaye - (brut_sermaye * komisyon_orani)
-                toplam_islem += 1
-                
-                if sermaye > (alinan_lot * alinan_fiyat): 
-                    basarili_islem += 1
-                    kazanc_toplami += (gercek_satim_fiyati - alinan_fiyat)
-                else:
-                    kayip_toplami += (alinan_fiyat - gercek_satim_fiyati)
-                pozisyon_acik = False
                 
         getiri_yuzdesi = ((sermaye - baslangic) / baslangic) * 100
         win_rate = (basarili_islem / toplam_islem) if toplam_islem > 0 else 0
@@ -195,13 +213,12 @@ class QuantStrategy:
         gunluk = QuantModel.gostergeleri_hesapla(gunluk)
         if gunluk.empty: return None
             
-        win_rate, getiri, islem_sayisi, risk_odul = Backtester.gercekci_test(gunluk, self.config.komisyon, self.config.slippage)
+        win_rate, getiri, islem_sayisi, risk_odul = Backtester.gercekci_test(gunluk, self.config.komisyon, self.config.slippage, self.config)
         ml_olasilik = QuantModel.ml_tahmin_et(gunluk)
         
         son_gun = gunluk.iloc[-1]
         fiyat = float(son_gun['Close'])
         rsi = float(son_gun['RSI'])
-        atr = float(son_gun['ATR'])
         
         skor = 0
         nedenler = []
@@ -218,6 +235,7 @@ class QuantStrategy:
         
         skor = max(0, min(skor, 100))
         
+        # Skor kararları 
         if skor >= 80: karar = "🔥 KESİN AL"
         elif skor >= 60: karar = "🟢 POTANSİYEL AL"
         elif skor <= 30 or rsi > self.config.rsi_sat: karar = "🔴 SAT / RİSKLİ"
@@ -235,13 +253,13 @@ class QuantStrategy:
             "Win Rate": f"%{win_rate}",
             "Fiyat (₺)": round(fiyat, 2), 
             "Kelly Lotu": lot_sayisi,
-            "Nedenler": " | ".join(nedenler[:3])
+            "Nedenler": " | ".join(nedenler[:3]) if nedenler else "Standart Görünüm"
         }
 
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("🧠 YZ Destekli Hedge Fon Botu v6.2")
-    st.markdown("Otomatik BIST 30 Radarı, AI Tahmini ve Kelly Optimizasyonu entegreli.")
+    st.title("🧠 YZ Destekli Hedge Fon Botu v6.3")
+    st.markdown("BIST 100 Katılım Radarı, AI Tahmini ve Kelly Optimizasyonu entegreli.")
     st.markdown("---")
 
     # --- YAN MENÜ ---
@@ -250,13 +268,13 @@ def ui_olustur():
     komisyon = st.sidebar.number_input("Komisyon Oranı (%)", value=0.1, step=0.05) / 100
     slippage = st.sidebar.number_input("Tahmini Kayma (%)", value=0.2, step=0.1) / 100
 
-    config = BotConfig(40, 75, 1.5, 3.0, toplam_sermaye, komisyon, slippage)
+    config = BotConfig(60, 75, 1.5, 3.0, toplam_sermaye, komisyon, slippage)
     strateji = QuantStrategy(config)
 
     # --- 1. MANUEL TARAMA BÖLÜMÜ ---
     st.sidebar.markdown("### 🔍 Manuel Tarama")
-    varsayilan_hisseler = "THYAO\nASELS\nTUPRS\nISCTR\nKCHOL"
-    hisseler_metin = st.sidebar.text_area("Taranacak Hisseler:", varsayilan_hisseler, height=120)
+    varsayilan_hisseler = "THYAO\nASELS\nTUPRS\nMPARK\nYUNSA\nBIMAS\nDOAS"
+    hisseler_metin = st.sidebar.text_area("Taranacak Hisseler:", varsayilan_hisseler, height=140)
 
     if st.sidebar.button("🚀 Manuel Analizi Başlat", use_container_width=True):
         hisse_listesi = [h.strip().upper() + ".IS" for h in hisseler_metin.split("\n") if h.strip()]
@@ -277,49 +295,58 @@ def ui_olustur():
             df = pd.DataFrame(sonuclar)
             def tablo_renk(val):
                 if "🔥 KESİN AL" in str(val): return 'background-color: #1e4620; color: white; font-weight: bold;'
+                elif "🟢 POTANSİYEL AL" in str(val): return 'background-color: #388e3c; color: white;'
                 elif "🔴 SAT" in str(val): return 'background-color: #b71c1c; color: white;'
                 return ''
                 
             st.dataframe(df.style.map(tablo_renk, subset=['Karar']), use_container_width=True)
         else:
-            st.error("Veri işlenemedi.")
+            st.error("Veri işlenemedi. Yahoo Finance geçici olarak yanıt vermiyor olabilir.")
 
     # --- 2. OTOMATİK FIRSAT RADARI ---
-    st.markdown("### 📡 Otomatik Fırsat Radarı (BIST 30)")
-    st.markdown("Sistem arka planda ana tahtaları tarar ve sadece **🔥 KESİN AL (Skor >= %80)** seviyesine ulaşanları aşağıya düşürür.")
+    st.markdown("### 📡 Otomatik Fırsat Radarı (BIST 100 Katılım Endeksi)")
+    st.markdown("Sistem arka planda katılım endeksindeki tahtaları tarar ve **AL (Skor $\geq$ %60)** seviyesine ulaşanları yakalar.")
 
-    if st.button("🔍 Radarı Çalıştır (BIST 30)", use_container_width=True):
-        bist30_hisseler = [
-            "AKBNK.IS", "ARCLK.IS", "ASELS.IS", "BIMAS.IS", "EKGYO.IS", "ENKAI.IS", 
-            "EREGL.IS", "FROTO.IS", "GARAN.IS", "GUBRF.IS", "HEKTS.IS", "ISCTR.IS", 
-            "KCHOL.IS", "KOZAA.IS", "KOZAL.IS", "KRDMD.IS", "PETKM.IS", "PGSUS.IS", 
-            "SAHOL.IS", "SASA.IS", "SISE.IS", "TAVHL.IS", "TCELL.IS", "THYAO.IS", 
-            "TKFEN.IS", "TOASO.IS", "TSKB.IS", "TTKOM.IS", "TUPRS.IS", "YKBNK.IS"
+    if st.button("🔍 Katılım Radarını Çalıştır", use_container_width=True):
+        # BIST 100 Katılım Endeksi Temsili Hisseleri
+        bist_katilim_hisseler = [
+            "ALBRK.IS", "ASELS.IS", "BIMAS.IS", "CANTE.IS", "CIMSA.IS", "DOAS.IS", 
+            "EGEEN.IS", "EKGYO.IS", "ENJSA.IS", "ENKAI.IS", "EUPWR.IS", "FROTO.IS", 
+            "GWIND.IS", "HEKTS.IS", "KCAER.IS", "KMPUR.IS", "KONTR.IS", "KORDS.IS", 
+            "KOZAA.IS", "KOZAL.IS", "KRDMD.IS", "MIATK.IS", "MPARK.IS", "OTKAR.IS", 
+            "OYAKC.IS", "PGSUS.IS", "SASA.IS", "SMARTG.IS", "SMRTG.IS", "THYAO.IS", 
+            "TOASO.IS", "TUKAS.IS", "TUPRS.IS", "ULKER.IS", "VESBE.IS", "VESTL.IS", 
+            "YEOTK.IS", "YUNSA.IS"
         ]
         
-        st.info("BIST 30 hisseleri taranıyor, bu işlem yaklaşık 1-2 dakika sürebilir...")
+        st.info("BIST 100 Katılım hisseleri taranıyor. Cache sistemi sayesinde ikinci taramalar anında gerçekleşecektir...")
         radar_ilerleme = st.progress(0)
         bulunan_firsatlar = []
         
-        for i, hisse in enumerate(bist30_hisseler):
+        for i, hisse in enumerate(bist_katilim_hisseler):
             sonuc = strateji.analiz_et(hisse)
-            if sonuc and ("KESİN AL" in sonuc["Karar"] or int(sonuc["Skor"].replace("%", "")) >= 80):
+            # AL sinyali içerenleri (Kesin Al & Potansiyel Al) yakalıyoruz (Skor >= 60 şartını Karar metni sağlıyor)
+            if sonuc and ("AL" in sonuc["Karar"]):
                 bulunan_firsatlar.append(sonuc)
-            radar_ilerleme.progress((i + 1) / len(bist30_hisseler))
+            radar_ilerleme.progress((i + 1) / len(bist_katilim_hisseler))
             
         radar_ilerleme.empty()
         
         if bulunan_firsatlar:
-            st.success(f"🚨 Ekrana Düşen Fırsatlar: {len(bulunan_firsatlar)} Adet 'Güçlü Al' Sinyali Yakalandı!")
+            st.success(f"🚨 Ekrana Düşen Fırsatlar: Katılım Endeksinde {len(bulunan_firsatlar)} Adet 'AL' Sinyali Yakalandı!")
             
             sutunlar = st.columns(min(len(bulunan_firsatlar), 4))
             for idx, firsat in enumerate(bulunan_firsatlar):
                 with sutunlar[idx % 4]:
+                    
+                    renk_kodu = "#1e4620" if "KESİN" in firsat["Karar"] else "#2e7d32"
+                    
                     st.markdown(f"""
-                    <div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: #1e4620; color: white;">
+                    <div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: {renk_kodu}; color: white; margin-bottom: 10px;">
                         <h2 style="text-align: center; color: #4caf50; margin-top: 0;">{firsat['Hisse']}</h2>
                         <h1 style="text-align: center; margin: 0;">{firsat['Skor']}</h1>
                         <p style="text-align: center; font-size: 18px;"><b>{firsat['Fiyat (₺)']} ₺</b></p>
+                        <p style="text-align: center; font-size: 14px; background-color: #1b5e20; border-radius: 5px; padding: 3px;">{firsat['Karar']}</p>
                         <hr style="border-color: #4caf50;">
                         <p style="font-size: 14px;"><b>Yapay Zeka:</b> {firsat['AI Tahmini']}</p>
                         <p style="font-size: 14px;"><b>Win Rate:</b> {firsat['Win Rate']}</p>
@@ -327,7 +354,7 @@ def ui_olustur():
                     </div>
                     """, unsafe_allow_html=True)
         else:
-            st.warning("Şu anki piyasa koşullarında BIST 30 içinde radara takılan bir 'Güçlü Al' fırsatı bulunamadı.")
+            st.warning("Şu anki piyasa koşullarında BIST 100 Katılım Endeksi içinde radara takılan bir fırsat bulunamadı.")
 
 if __name__ == "__main__":
     ui_olustur()
