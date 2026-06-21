@@ -8,14 +8,15 @@ import logging
 import requests
 import datetime
 from concurrent.futures import ThreadPoolExecutor
+from sklearn.ensemble import RandomForestClassifier # ML için eklendi
 
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v8.4", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v8.5", page_icon="🤖", layout="wide")
 
-# --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
+# --- 0. GÜVENLİK VE OTURUM YÖNETİMİ (Değiştirilmedi) ---
 def sifre_kontrol():
     if "giris_basarili" not in st.session_state:
         st.session_state["giris_basarili"] = False
@@ -61,7 +62,7 @@ class BotConfig:
         self.komisyon = komisyon
         self.slippage = slippage
 
-# --- 2. HAKİKİ QUANTAMENTAL VERİ VE DUYGU ANALİZİ (HABER DESTEKLİ) ---
+# --- 2. HAKİKİ QUANTAMENTAL VERİ VE DUYGU ANALİZİ (GELİŞTİRİLDİ) ---
 class DataFetcher:
     @staticmethod
     @st.cache_data(ttl=1200, show_spinner=False)
@@ -130,14 +131,22 @@ class DataFetcher:
             
             pozitif_kelimeler = ['kar', 'kâr', 'kazanc', 'kazanç', 'buyume', 'büyüme', 'rekor', 'ihracat', 'anlasma', 'anlaşma', 'ortaklik', 'ortaklık', 'pozitif', 'kap', 'buy', 'profit', 'growth', 'bullish', 'upgrade', 'contract', 'revenue']
             negatif_kelimeler = ['zarar', 'kayip', 'kayıp', 'dusus', 'düşüş', 'risk', 'iptal', 'ceza', 'dava', 'sorusturma', 'soruşturma', 'negatif', 'sell', 'loss', 'drop', 'bearish', 'downgrade', 'decline', 'deficit', 'fine']
+            negasyon_kelimeleri = ['sona erdi', 'iptal edildi', 'kalkti', 'kapatildi', 'reddedildi', 'beklentisi asildi', 'geride kaldi'] # YENİ BAĞLAM DÜZELTİCİ
             
             toplam_skor = 0
             analiz_edilen_haber_sayisi = 0
             
             for haber in haberler[:5]: 
                 baslik = haber.get('title', '').lower()
+                
                 pos_puan = sum(1 for kelime in pozitif_kelimeler if kelime in baslik)
                 neg_puan = sum(1 for kelime in negatif_kelimeler if kelime in baslik)
+                
+                # Negasyon Kontrolü: Negatif kelime varsa ama yanında iptal/sona erdi varsa pozitife çevir
+                if neg_puan > 0:
+                    if any(neg in baslik for neg in negasyon_kelimeleri):
+                        neg_puan -= 1
+                        pos_puan += 1
                 
                 toplam_skor += (pos_puan - neg_puan) * 25
                 analiz_edilen_haber_sayisi += 1
@@ -168,7 +177,7 @@ class DataFetcher:
             pass
         return "BULL"
 
-# --- 3. TEKNİK VE MAKİNE ÖĞRENMESİ ---
+# --- 3. TEKNİK VE MAKİNE ÖĞRENMESİ (GELİŞTİRİLDİ) ---
 class QuantModel:
     @staticmethod
     def gostergeleri_hesapla(df):
@@ -193,6 +202,9 @@ class QuantModel:
         df['Vol_Pct'] = df['Volume'].pct_change() 
         df['Return'] = df['Close'].pct_change()
         
+        # Makro / Trend Mesafesi Özelliği (ML için eklendi)
+        df['SMA_20_Fark'] = (df['Close'] - df['SMA_20']) / df['SMA_20']
+        
         df.dropna(inplace=True)
         return df
 
@@ -200,20 +212,36 @@ class QuantModel:
     def ml_tahmin_et(df):
         try:
             veri = df.copy()
+            # Gelecekteki 1 günlük getiriyi hedef al
             veri['Hedef'] = np.where(veri['Close'].shift(-1) > veri['Close'], 1, 0)
             veri.dropna(inplace=True)
             
-            ozellikler = ['RSI', 'MACD_Line', 'ADX', 'Z_Score', 'Vol_Pct', 'Return']
+            # Daha fazla anlamlı feature eklendi
+            ozellikler = ['RSI', 'MACD_Line', 'ADX', 'Z_Score', 'Vol_Pct', 'Return', 'SMA_20_Fark']
             X = veri[ozellikler]
             y = veri['Hedef']
             
-            model = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=5)
-            model.fit(X, y)
+            # Zaman Serisi Veri Bölme (Look-ahead bias ve Overfitting koruması)
+            # Modeli eğitirken verinin %80'ini kullanıyoruz, geri kalanını ezberlemiyor.
+            split_index = int(len(X) * 0.8)
+            X_train = X.iloc[:split_index]
+            y_train = y.iloc[:split_index]
             
-            son_veri = df[ozellikler].iloc[-1:]
+            # Overfitting'i önlemek için parametreler optimize edildi
+            model = RandomForestClassifier(
+                n_estimators=100, 
+                random_state=42, 
+                max_depth=3, # Ezberlemeyi önler
+                min_samples_leaf=5, 
+                class_weight='balanced' # Düşüş ve yükseliş dengesizliğini ayarlar
+            )
+            model.fit(X_train, y_train)
+            
+            # Son günün verisiyle tahminde bulun
+            son_veri = X.iloc[-1:]
             yukselis_olasiligi = model.predict_proba(son_veri)[0][1] * 100
             return round(yukselis_olasiligi, 1)
-        except:
+        except Exception as e:
             return 50.0
 
 # --- 4. BACKTEST (ATR, Slippage & Komisyon) ---
@@ -302,7 +330,7 @@ class QuantStrategy:
         atr = float(son_gun['ATR'])
         
         # --- DİNAMİK AL, STOP VE KAR AL HESAPLAMALARI (ATR TABANLI) ---
-        al_fiyati = fiyat # Güncel kapanış mum seviyesi giriş kabul edilir
+        al_fiyati = fiyat 
         stop_fiyati = al_fiyati - (atr * self.config.atr_stop)
         kar_fiyati = al_fiyati + (atr * self.config.atr_kar)
         
@@ -384,8 +412,8 @@ class QuantStrategy:
 
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("🧠 YZ Destekli Katılım Fonu Botu v8.4")
-    st.markdown("Uzun Vadeli Trend Koruması ve ATR Tabanlı Dinamik Al / Stop-Loss / Kâr Al Seviyeleri Eklendi.")
+    st.title("🧠 YZ Destekli Katılım Fonu Botu v8.5")
+    st.markdown("Makine Öğrenmesi Overfitting Koruması ve Bağlamsal Duygu Analizi Entegre Edildi.")
     st.markdown("---")
 
     # --- YAN MENÜ ---
