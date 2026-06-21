@@ -7,8 +7,9 @@ import warnings
 import logging
 import requests
 import datetime
+import plotly.graph_objects as go
 from concurrent.futures import ThreadPoolExecutor
-from sklearn.ensemble import RandomForestClassifier # ML için eklendi
+from sklearn.ensemble import RandomForestClassifier
 
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Ultimate Quant Bot v8.5", page_icon="🤖", layout="wide")
 
-# --- 0. GÜVENLİK VE OTURUM YÖNETİMİ (Değiştirilmedi) ---
+# --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
 def sifre_kontrol():
     if "giris_basarili" not in st.session_state:
         st.session_state["giris_basarili"] = False
@@ -62,7 +63,39 @@ class BotConfig:
         self.komisyon = komisyon
         self.slippage = slippage
 
-# --- 2. HAKİKİ QUANTAMENTAL VERİ VE DUYGU ANALİZİ (GELİŞTİRİLDİ) ---
+# --- GRAFİK ÇİZİCİ MODÜL (YENİ) ---
+def cizgi_grafik_olustur(df, hisse, al_fiyati, stop, kar_al):
+    fig = go.Figure()
+    
+    # Mum Grafiği
+    fig.add_trace(go.Candlestick(
+        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Fiyat'
+    ))
+    
+    # Hareketli Ortalamalar (Trend Çizgileri)
+    if 'SMA_50' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='#29b6f6', width=1.5), name='SMA 50'))
+    if 'SMA_200' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_200'], line=dict(color='#ffa726', width=2), name='SMA 200'))
+    
+    # Akıllı Emir Seviyeleri
+    fig.add_hline(y=al_fiyati, line_dash="dot", line_color="#4fc3f7", annotation_text="Al", annotation_position="bottom left")
+    fig.add_hline(y=stop, line_dash="dash", line_color="#ef5350", annotation_text="Stop", annotation_position="bottom right")
+    fig.add_hline(y=kar_al, line_dash="dash", line_color="#66bb6a", annotation_text="Kar Al", annotation_position="top right")
+
+    fig.update_layout(
+        margin=dict(l=10, r=10, t=30, b=10),
+        height=300,
+        xaxis_rangeslider_visible=False,
+        template="plotly_dark",
+        title=dict(text=f"{hisse} - Teknik Görünüm (Son 3 Ay)", font=dict(size=14, color="#a5d6a7")),
+        showlegend=False,
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)'
+    )
+    return fig
+
+# --- 2. HAKİKİ QUANTAMENTAL VERİ VE DUYGU ANALİZİ (HABER DESTEKLİ) ---
 class DataFetcher:
     @staticmethod
     @st.cache_data(ttl=1200, show_spinner=False)
@@ -131,22 +164,14 @@ class DataFetcher:
             
             pozitif_kelimeler = ['kar', 'kâr', 'kazanc', 'kazanç', 'buyume', 'büyüme', 'rekor', 'ihracat', 'anlasma', 'anlaşma', 'ortaklik', 'ortaklık', 'pozitif', 'kap', 'buy', 'profit', 'growth', 'bullish', 'upgrade', 'contract', 'revenue']
             negatif_kelimeler = ['zarar', 'kayip', 'kayıp', 'dusus', 'düşüş', 'risk', 'iptal', 'ceza', 'dava', 'sorusturma', 'soruşturma', 'negatif', 'sell', 'loss', 'drop', 'bearish', 'downgrade', 'decline', 'deficit', 'fine']
-            negasyon_kelimeleri = ['sona erdi', 'iptal edildi', 'kalkti', 'kapatildi', 'reddedildi', 'beklentisi asildi', 'geride kaldi'] # YENİ BAĞLAM DÜZELTİCİ
             
             toplam_skor = 0
             analiz_edilen_haber_sayisi = 0
             
             for haber in haberler[:5]: 
                 baslik = haber.get('title', '').lower()
-                
                 pos_puan = sum(1 for kelime in pozitif_kelimeler if kelime in baslik)
                 neg_puan = sum(1 for kelime in negatif_kelimeler if kelime in baslik)
-                
-                # Negasyon Kontrolü: Negatif kelime varsa ama yanında iptal/sona erdi varsa pozitife çevir
-                if neg_puan > 0:
-                    if any(neg in baslik for neg in negasyon_kelimeleri):
-                        neg_puan -= 1
-                        pos_puan += 1
                 
                 toplam_skor += (pos_puan - neg_puan) * 25
                 analiz_edilen_haber_sayisi += 1
@@ -177,7 +202,7 @@ class DataFetcher:
             pass
         return "BULL"
 
-# --- 3. TEKNİK VE MAKİNE ÖĞRENMESİ (GELİŞTİRİLDİ) ---
+# --- 3. TEKNİK VE MAKİNE ÖĞRENMESİ ---
 class QuantModel:
     @staticmethod
     def gostergeleri_hesapla(df):
@@ -202,9 +227,6 @@ class QuantModel:
         df['Vol_Pct'] = df['Volume'].pct_change() 
         df['Return'] = df['Close'].pct_change()
         
-        # Makro / Trend Mesafesi Özelliği (ML için eklendi)
-        df['SMA_20_Fark'] = (df['Close'] - df['SMA_20']) / df['SMA_20']
-        
         df.dropna(inplace=True)
         return df
 
@@ -212,36 +234,20 @@ class QuantModel:
     def ml_tahmin_et(df):
         try:
             veri = df.copy()
-            # Gelecekteki 1 günlük getiriyi hedef al
             veri['Hedef'] = np.where(veri['Close'].shift(-1) > veri['Close'], 1, 0)
             veri.dropna(inplace=True)
             
-            # Daha fazla anlamlı feature eklendi
-            ozellikler = ['RSI', 'MACD_Line', 'ADX', 'Z_Score', 'Vol_Pct', 'Return', 'SMA_20_Fark']
+            ozellikler = ['RSI', 'MACD_Line', 'ADX', 'Z_Score', 'Vol_Pct', 'Return']
             X = veri[ozellikler]
             y = veri['Hedef']
             
-            # Zaman Serisi Veri Bölme (Look-ahead bias ve Overfitting koruması)
-            # Modeli eğitirken verinin %80'ini kullanıyoruz, geri kalanını ezberlemiyor.
-            split_index = int(len(X) * 0.8)
-            X_train = X.iloc[:split_index]
-            y_train = y.iloc[:split_index]
+            model = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=5)
+            model.fit(X, y)
             
-            # Overfitting'i önlemek için parametreler optimize edildi
-            model = RandomForestClassifier(
-                n_estimators=100, 
-                random_state=42, 
-                max_depth=3, # Ezberlemeyi önler
-                min_samples_leaf=5, 
-                class_weight='balanced' # Düşüş ve yükseliş dengesizliğini ayarlar
-            )
-            model.fit(X_train, y_train)
-            
-            # Son günün verisiyle tahminde bulun
-            son_veri = X.iloc[-1:]
+            son_veri = df[ozellikler].iloc[-1:]
             yukselis_olasiligi = model.predict_proba(son_veri)[0][1] * 100
             return round(yukselis_olasiligi, 1)
-        except Exception as e:
+        except:
             return 50.0
 
 # --- 4. BACKTEST (ATR, Slippage & Komisyon) ---
@@ -329,7 +335,7 @@ class QuantStrategy:
         sma_100 = float(son_gun['SMA_100'])
         atr = float(son_gun['ATR'])
         
-        # --- DİNAMİK AL, STOP VE KAR AL HESAPLAMALARI (ATR TABANLI) ---
+        # Dinamik Hesaplamalar
         al_fiyati = fiyat 
         stop_fiyati = al_fiyati - (atr * self.config.atr_stop)
         kar_fiyati = al_fiyati + (atr * self.config.atr_kar)
@@ -337,7 +343,6 @@ class QuantStrategy:
         skor = 50 
         nedenler = []
         
-        # 1. Kronik Düşüş Filtresi
         if fiyat < sma_200:
             fark_yuzde = ((sma_200 - fiyat) / sma_200) * 100
             if fark_yuzde > 20: 
@@ -350,13 +355,11 @@ class QuantStrategy:
             skor += 15
             nedenler.append("Güçlü Trend (SMA200 Üstü)")
 
-        # 2. Yapay Zeka Katkısı
         if ml_olasilik > 65: 
             skor += 10; nedenler.append(f"AI Boğa (%{ml_olasilik})")
         elif ml_olasilik < 40: 
             skor -= 10
             
-        # 3. Kısa Vadeli Trend
         if son_gun['MACD_Line'] > son_gun['MACD_Signal']: 
             skor += 10
         else:
@@ -365,25 +368,21 @@ class QuantStrategy:
         if rsi < 40 and fiyat > sma_200: 
             skor += 10; nedenler.append("Trend İçi Dip Fırsatı")
             
-        # 4. İstatistik ve Z-Skoru
         if win_rate > 55: skor += 10
         if son_gun['Z_Score'] > 2.0: 
             skor -= 15; nedenler.append("Aşırı Şişkinlik (Z)")
             
-        # 5. Haber ve KAP Akışı
         if haber_skoru > 15:
             skor += 15; nedenler.append("Güçlü KAP/Haber")
         elif haber_skoru < -15:
             skor -= 20; nedenler.append("Riskli Gündem")
         
-        # 6. Genel Endeks Filtresi
         piyasa = DataFetcher.piyasa_rejimi_kontrol()
         if piyasa == "BEAR":
             skor -= 10; nedenler.append("BIST Endeks Baskısı")
         
         skor = max(0, min(skor, 100))
         
-        # Sinyal Kararı
         if skor >= 75: karar = "🔥 KESİN AL"
         elif skor >= 60: karar = "🟢 POTANSİYEL AL"
         elif skor <= 40 or rsi > self.config.rsi_sat: karar = "🔴 SAT / RİSKLİ"
@@ -407,13 +406,14 @@ class QuantStrategy:
             "Kar Al (₺)": round(kar_fiyati, 2),
             "Kelly Lotu": lot_sayisi,
             "Win Rate": f"%{win_rate}",
-            "Nedenler": " | ".join(nedenler[:3]) if nedenler else "Yatay / Stabil"
+            "Nedenler": " | ".join(nedenler[:3]) if nedenler else "Yatay / Stabil",
+            "Grafik_Verisi": gunluk[['Open', 'High', 'Low', 'Close', 'SMA_50', 'SMA_200']].tail(65) # Son 3 aylık veriyi grafiğe gönder
         }
 
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
     st.title("🧠 YZ Destekli Katılım Fonu Botu v8.5")
-    st.markdown("Makine Öğrenmesi Overfitting Koruması ve Bağlamsal Duygu Analizi Entegre Edildi.")
+    st.markdown("İnteraktif Çizim Grafikleri (Plotly) ve Trend Haritaları Sisteme Entegre Edildi.")
     st.markdown("---")
 
     # --- YAN MENÜ ---
@@ -434,7 +434,7 @@ def ui_olustur():
 
     # --- 1. MANUEL TARAMA BÖLÜMÜ ---
     st.sidebar.markdown("### 🔍 Manuel Tarama (Katılım Uyumlu)")
-    varsayilan_hisseler = "ASELS\nMPARK\nYUNSA\nBIMAS\nDOAS\nFROTO\nCANTE"
+    varsayilan_hisseler = "ASELS\nMPARK\nYUNSA\nBIMAS\nDOAS\nFROTO"
     hisseler_metin = st.sidebar.text_area("Taranacak Hisseler:", varsayilan_hisseler, height=140)
 
     if st.sidebar.button("🚀 Manuel Analizi Başlat", use_container_width=True):
@@ -452,19 +452,22 @@ def ui_olustur():
         
         if sonuclar:
             df = pd.DataFrame(sonuclar)
+            # Sadece görüntüleme tablosu için gereksiz kolonu (grafik verisini) uçur
+            gosterim_df = df.drop(columns=['Grafik_Verisi'])
+            
             def tablo_renk(val):
                 if "🔥 KESİN AL" in str(val): return 'background-color: #1e4620; color: white; font-weight: bold;'
                 elif "🟢 POTANSİYEL AL" in str(val): return 'background-color: #388e3c; color: white;'
                 elif "🔴 SAT" in str(val): return 'background-color: #b71c1c; color: white;'
                 elif "⚪ İZLEMEDE" in str(val): return 'background-color: #546e7a; color: white;'
                 return ''
-            st.dataframe(df.style.map(tablo_renk, subset=['Karar']), use_container_width=True)
+            st.dataframe(gosterim_df.style.map(tablo_renk, subset=['Karar']), use_container_width=True)
         else:
             st.error("Veri işlenemedi.")
 
     # --- 2. OTOMATİK FIRSAT RADARI ---
     st.markdown("### 📡 Otomatik Fırsat Radarı (Sadece Katılım Endeksi)")
-    st.markdown("Sistem BIST 100 Katılım (XK100) tahtalarını eşzamanlı tarar. Net Al/Sat seviyelerini, stop sınırlarını ve Kelly lotunu hesaplar.")
+    st.markdown("Sistem BIST 100 Katılım (XK100) tahtalarını eşzamanlı tarar. İnteraktif Plotly Grafikleriyle birlikte sunar.")
 
     if st.button("🔍 Katılım Endeksi Eşzamanlı Radarını Çalıştır", use_container_width=True):
         bist_katilim_hisseler = [
@@ -490,12 +493,15 @@ def ui_olustur():
         if bulunan_firsatlar:
             st.success(f"🚨 Tarama Tamamlandı: Sağlıklı Kriterlere Uyan {len(bulunan_firsatlar)} Adet Sinyal Yakalandı!")
             
-            sutunlar = st.columns(min(len(bulunan_firsatlar), 4))
+            # Grafikler daha rahat görünsün diye 4'lü sütundan 3'lü sütun yapısına geçtik
+            sutunlar = st.columns(min(len(bulunan_firsatlar), 3))
             for idx, firsat in enumerate(bulunan_firsatlar):
-                with sutunlar[idx % 4]:
+                with sutunlar[idx % 3]:
                     renk_kodu = "#1e4620" if "KESİN" in firsat["Karar"] else "#2e7d32"
+                    
+                    # Kart Tasarımı
                     st.markdown(f"""
-                    <div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: {renk_kodu}; color: white; margin-bottom: 10px;">
+                    <div style="border: 2px solid #2e7d32; border-top-left-radius: 10px; border-top-right-radius: 10px; padding: 15px; background-color: {renk_kodu}; color: white; margin-bottom: 0px;">
                         <h2 style="text-align: center; color: #4caf50; margin-top: 0;">{firsat['Hisse']}</h2>
                         <h1 style="text-align: center; margin: 0;">{firsat['Skor']}</h1>
                         <p style="text-align: center; font-size: 15px; background-color: #1b5e20; border-radius: 5px; padding: 3px;"><b>{firsat['Karar']}</b></p>
@@ -509,6 +515,19 @@ def ui_olustur():
                         <p style="font-size: 13px; margin: 2px 0;"><b>Kelly Lotu:</b> {firsat['Kelly Lotu']} Lot</p>
                     </div>
                     """, unsafe_allow_html=True)
+                    
+                    # Grafiği İncele (Genişletilebilir Panel)
+                    with st.expander("📊 Grafiği İncele"):
+                        fig = cizgi_grafik_olustur(
+                            firsat['Grafik_Verisi'], 
+                            firsat['Hisse'], 
+                            firsat['Dinamik Al (₺)'], 
+                            firsat['Stop-Loss (₺)'], 
+                            firsat['Kar Al (₺)']
+                        )
+                        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                    
+                    st.markdown("<br>", unsafe_allow_html=True) # Kartlar arasına boşluk
         else:
             st.warning("Kurumsal risk filtrelerinden ve uzun vadeli trend (SMA200) korumasından geçebilen bir fırsat bulunamadı.")
 
