@@ -10,12 +10,19 @@ import datetime
 import plotly.graph_objects as go
 from concurrent.futures import ThreadPoolExecutor
 from sklearn.ensemble import RandomForestClassifier
+import xml.etree.ElementTree as ET
+
+# --- GEMINI ENTEGRASYONU ---
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
 
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v8.5", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v8.5 (Gemini Mod)", page_icon="🤖", layout="wide")
 
 # --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
 def sifre_kontrol():
@@ -113,7 +120,8 @@ class DataFetcher:
                     'roe': info.get('returnOnEquity', None)
                 }
                 
-                haber_skoru, haber_durumu = DataFetcher.haber_duygu_analizi(ticker)
+                # DEĞİŞİKLİK BURADA: Yeni sistem ticker nesnesi değil hisse adını istiyor
+                haber_skoru, haber_durumu = DataFetcher.haber_duygu_analizi(hisse_kodu)
                 return gunluk_veri, haftalik_veri, temel_veriler, 0, haber_skoru, haber_durumu
         except Exception as e:
             logging.warning(f"YFinance hatası ({hisse_kodu}). Yedek sisteme geçiliyor...")
@@ -156,35 +164,64 @@ class DataFetcher:
         return None, None, None, None, None, None
 
     @staticmethod
-    def haber_duygu_analizi(ticker_obj):
+    def haber_duygu_analizi(hisse_kodu):
+        temiz_isim = hisse_kodu.replace(".IS", "")
         try:
-            haberler = ticker_obj.news
-            if not haberler:
-                return 0, "Nötr / Gündem Sakin"
-            
-            pozitif_kelimeler = ['kar', 'kâr', 'kazanc', 'kazanç', 'buyume', 'büyüme', 'rekor', 'ihracat', 'anlasma', 'anlaşma', 'ortaklik', 'ortaklık', 'pozitif', 'kap', 'buy', 'profit', 'growth', 'bullish', 'upgrade', 'contract', 'revenue']
-            negatif_kelimeler = ['zarar', 'kayip', 'kayıp', 'dusus', 'düşüş', 'risk', 'iptal', 'ceza', 'dava', 'sorusturma', 'soruşturma', 'negatif', 'sell', 'loss', 'drop', 'bearish', 'downgrade', 'decline', 'deficit', 'fine']
-            
+            # 1. Google News RSS üzerinden Türkçe haberleri çek
+            url = f"https://news.google.com/rss/search?q={temiz_isim}+hisse+ihale+kap+temettü+sözleşme&hl=tr&gl=TR&ceid=TR:tr"
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            yanit = requests.get(url, headers=headers, timeout=5)
+            root = ET.fromstring(yanit.content)
+
+            basliklar = []
+            for item in root.findall('.//item')[:5]:
+                baslik = item.find('title').text
+                if baslik: basliklar.append(baslik)
+
+            if not basliklar:
+                return 0, "Nötr / Haber Yok"
+
+            # 2. Gemini Yapay Zeka ile Analiz
+            if genai:
+                try:
+                    haber_metni = " | ".join(basliklar)
+                    model = genai.GenerativeModel('gemini-1.5-flash')
+                    prompt = (
+                        f"Sen Borsa İstanbul uzmanısın. Şu Türkçe haber başlıklarının "
+                        f"{temiz_isim} hissesine kısa vadeli etkisini -100 ile +100 arasında "
+                        f"tek bir tam sayı olarak puanla. Sadece sayıyı yaz.\nHaberler: {haber_metni}"
+                    )
+
+                    response = model.generate_content(prompt)
+                    skor_text = response.text.strip()
+                    temiz_skor_str = ''.join(c for c in skor_text if c.isdigit() or c == '-')
+                    skor = int(temiz_skor_str)
+
+                    if skor > 15: durum = "🔥 Gemini: Pozitif Beklenti"
+                    elif skor < -15: durum = "⚠️ Gemini: Negatif Beklenti"
+                    else: durum = "⚪ Gemini: Nötr"
+                    return skor, durum
+                except Exception as e:
+                    pass # Gemini hatası olursa klasik sisteme geç
+
+            # 3. Gemini Yoksa veya Hata Verirse: Klasik Kelime Analizi (Yedek)
+            pozitif_kelimeler = ['kar', 'kâr', 'kazanc', 'kazanç', 'buyume', 'büyüme', 'rekor', 'ihracat', 'anlasma', 'anlaşma', 'ortaklik', 'ortaklık', 'pozitif', 'kap', 'buy', 'temettu']
+            negatif_kelimeler = ['zarar', 'kayip', 'kayıp', 'dusus', 'düşüş', 'risk', 'iptal', 'ceza', 'dava', 'sorusturma', 'soruşturma', 'negatif', 'sell']
+
             toplam_skor = 0
-            analiz_edilen_haber_sayisi = 0
-            
-            for haber in haberler[:5]: 
-                baslik = haber.get('title', '').lower()
+            for baslik in basliklar:
+                baslik = baslik.lower()
                 pos_puan = sum(1 for kelime in pozitif_kelimeler if kelime in baslik)
                 neg_puan = sum(1 for kelime in negatif_kelimeler if kelime in baslik)
-                
                 toplam_skor += (pos_puan - neg_puan) * 25
-                analiz_edilen_haber_sayisi += 1
-                
-            if analiz_edilen_haber_sayisi == 0: 
-                return 0, "Nötr"
-                
-            net_duygu = np.clip(toplam_skor / analiz_edilen_haber_sayisi, -100, 100)
-            
+
+            net_duygu = np.clip(toplam_skor / len(basliklar), -100, 100)
+
             if net_duygu > 15: return round(net_duygu, 1), "🔥 Pozitif Gündem"
             elif net_duygu < -15: return round(net_duygu, 1), "⚠️ Olumsuz Gündem"
             else: return 0, "⚪ Dengeli / Nötr"
-        except:
+
+        except Exception as e:
             return 0, "Haber Filtresi Devre Dışı"
 
     @staticmethod
@@ -413,8 +450,12 @@ class QuantStrategy:
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
     st.title("🧠 YZ Destekli Katılım Fonu Botu v8.5")
-    st.markdown("İnteraktif Çizim Grafikleri (Plotly) ve Trend Haritaları Sisteme Entegre Edildi.")
+    st.markdown("İnteraktif Çizim Grafikleri (Plotly), Trend Haritaları ve Gemini RSS Haber Okuyucu Sisteme Entegre Edildi.")
     st.markdown("---")
+
+    # API KEY YAPILANDIRMASI
+    if 'GEMINI_API_KEY' in st.secrets and genai:
+        genai.configure(api_key=st.secrets['GEMINI_API_KEY'])
 
     # --- YAN MENÜ ---
     st.sidebar.markdown("### 🏦 Kurumsal Parametreler")
