@@ -8,7 +8,6 @@ import logging
 import requests
 import datetime
 import plotly.graph_objects as go
-from concurrent.futures import ThreadPoolExecutor
 from sklearn.ensemble import RandomForestClassifier
 import urllib3
 
@@ -88,8 +87,8 @@ def cizgi_grafik_olustur(df, hisse, al_fiyati, stop, kar_al):
 
 # --- 2. HAKİKİ QUANTAMENTAL VERİ ---
 class DataFetcher:
+    # RAM şişmesini önlemek için cache_data kaldırıldı!
     @staticmethod
-    @st.cache_data(ttl=1200, show_spinner=False)
     def veri_indir(hisse_kodu):
         try:
             ticker = yf.Ticker(hisse_kodu)
@@ -167,7 +166,6 @@ class QuantModel:
             ortak_index = df.index.intersection(bist_df.index)
             df.loc[ortak_index, 'BIST_Return'] = bist_df.loc[ortak_index, 'Close'].pct_change()
             df['Hisse_Return'] = df['Close'].pct_change()
-            # BIST'e göre son 14 günlük ekstra performans
             df['Goreceli_Guc'] = (df['Hisse_Return'] - df['BIST_Return']).rolling(window=14).mean() * 100
         else:
             df['Goreceli_Guc'] = 0
@@ -189,7 +187,7 @@ class QuantModel:
             ozellikler = ['RSI', 'MACD_Line', 'ADX', 'Z_Score', 'Vol_Pct', 'Return', 'Goreceli_Guc']
             X, y = veri[ozellikler], veri['Hedef']
             
-            # RAM çökmesini engellemek için n_jobs=1 parametresi eklendi
+            # RAM çökmesini engellemek için n_jobs=1 parametresi zorunludur
             model = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=5, n_jobs=1)
             model.fit(X, y)
             
@@ -302,7 +300,6 @@ class QuantStrategy:
         
         skor = max(0, min(skor, 100))
         
-        # Karar Mekanizması Daha Sıkı Hale Getirildi
         if skor >= 80 and son_gun['ADX'] > 20: karar = "🔥 KESİN AL"
         elif skor >= 60: karar = "🟢 POTANSİYEL AL"
         elif skor <= 40: karar = "🔴 SAT / UZAK DUR"
@@ -345,21 +342,24 @@ def ui_olustur():
 
     st.sidebar.markdown("### 🔍 Özel Portföy Taraması")
     
-    # Kullanıcının düzenli takip ettiği hisseler varsayılan yapıldı
     varsayilan_hisseler = "MPARK\nBIMAS\nASELS\nENJSA\nTUPRS\nLOGO\nALBRK\nCIMSA\nEBEBK\nYEOTK"
     hisseler_metin = st.sidebar.text_area("Taranacak Hisseler:", varsayilan_hisseler, height=200)
 
+    # TAMAMEN SIRALI (SEQUENTIAL) ÇALIŞTIRMA MANTIĞI EKLENDİ
     if st.sidebar.button("🚀 Portföyü Analiz Et", use_container_width=True):
         hisse_listesi = [h.strip().upper() + ".IS" for h in hisseler_metin.split("\n") if h.strip()]
         ilerleme = st.progress(0)
         sonuclar = []
+        durum_metni = st.empty()
         
-        # CPU ve RAM çökmesini engellemek için thread sayısı 3'te tutuldu
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            sonuc_haritasi = executor.map(strateji.analiz_et, hisse_listesi)
-            for idx, sonuc in enumerate(sonuc_haritasi):
-                if sonuc: sonuclar.append(sonuc)
-                ilerleme.progress((idx + 1) / len(hisse_listesi))
+        for idx, hisse in enumerate(hisse_listesi):
+            durum_metni.text(f"⏳ Taranıyor: {hisse} ({idx+1}/{len(hisse_listesi)})")
+            sonuc = strateji.analiz_et(hisse)
+            if sonuc:
+                sonuclar.append(sonuc)
+            ilerleme.progress((idx + 1) / len(hisse_listesi))
+            
+        durum_metni.empty()
         ilerleme.empty()
         
         if sonuclar:
@@ -374,11 +374,12 @@ def ui_olustur():
                 return ''
             st.dataframe(gosterim_df.style.map(tablo_renk, subset=['Karar']), use_container_width=True)
         else:
-            st.error("Veri işlenemedi.")
+            st.error("Veri işlenemedi veya bağlantı kurulamadı.")
 
     st.markdown("### 📡 Otomatik Fırsat Radarı (Sadece Katılım Endeksi)")
     st.markdown("Bu radar günlük 'AL' sinyallerini **Haftalık Trend**, **Hacim Patlaması**, **ADX** ve **Göreceli Güç (Alfa)** filtrelerinden geçirerek sahte sinyalleri eler.")
 
+    # TAMAMEN SIRALI (SEQUENTIAL) ÇALIŞTIRMA MANTIĞI EKLENDİ
     if st.button("🔍 Gelişmiş Radarı Çalıştır", use_container_width=True):
         bist_katilim_hisseler = [
             "ALBRK.IS", "ALFAS.IS", "ASELS.IS", "ASTOR.IS", "BIMAS.IS", "BRSAN.IS", 
@@ -390,14 +391,21 @@ def ui_olustur():
             "TUKAS.IS", "VESBE.IS", "YEOTK.IS", "YUNSA.IS"
         ]
         
-        st.info("Eşzamanlı Tarama Aktif. Çoklu zaman dilimi ve hacim analizi yapılıyor...")
+        st.info("Sıralı Tarama Aktif. Çoklu zaman dilimi ve hacim analizi yapılıyor, lütfen sayfadan ayrılmayın...")
         
         bulunan_firsatlar = []
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            radar_sonuclari = executor.map(strateji.analiz_et, bist_katilim_hisseler)
-            for sonuc in radar_sonuclari:
-                if sonuc and ("AL" in sonuc["Karar"]):
-                    bulunan_firsatlar.append(sonuc)
+        ilerleme_radar = st.progress(0)
+        durum_radar = st.empty()
+        
+        for idx, hisse in enumerate(bist_katilim_hisseler):
+            durum_radar.text(f"⏳ Taranıyor: {hisse} ({idx+1}/{len(bist_katilim_hisseler)})")
+            sonuc = strateji.analiz_et(hisse)
+            if sonuc and ("AL" in sonuc["Karar"]):
+                bulunan_firsatlar.append(sonuc)
+            ilerleme_radar.progress((idx + 1) / len(bist_katilim_hisseler))
+            
+        durum_radar.empty()
+        ilerleme_radar.empty()
         
         if bulunan_firsatlar:
             st.success(f"🚨 Tarama Tamamlandı: Sağlıklı Kriterlere Uyan {len(bulunan_firsatlar)} Adet Sinyal Yakalandı!")
