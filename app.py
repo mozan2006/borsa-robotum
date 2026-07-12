@@ -14,14 +14,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# İş Yatırım kütüphanesi kontrolü
-try:
-    from isyatirimhisse import fetch_data
-except ImportError:
-    fetch_data = None
-
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v10.0 (Saf Algoritma)", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v10.1 (Saf Hız)", page_icon="⚡", layout="wide")
 
 # --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
 def sifre_kontrol():
@@ -83,39 +77,20 @@ def cizgi_grafik_olustur(df, hisse, al_fiyati, stop, kar_al):
     fig.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=300, xaxis_rangeslider_visible=False, template="plotly_dark", title=dict(text=f"{hisse} - Teknik Görünüm", font=dict(size=14, color="#a5d6a7")), showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     return fig
 
-# --- 2. HAKİKİ QUANTAMENTAL VERİ ---
+# --- 2. HAKİKİ QUANTAMENTAL VERİ (SADECE YFINANCE) ---
 class DataFetcher:
     @staticmethod
     def veri_indir(hisse_kodu):
         try:
+            # İş Yatırım tamamen kaldırıldı, sadece yfinance kullanılıyor.
             ticker = yf.Ticker(hisse_kodu)
             gunluk_veri = ticker.history(period="2y", interval="1d")
             
             if not gunluk_veri.empty and len(gunluk_veri) >= 60:
                 haftalik_veri = ticker.history(period="5y", interval="1wk")
                 return gunluk_veri, haftalik_veri
-        except Exception: pass
-
-        try:
-            sembol = hisse_kodu.replace(".IS", "")
-            bitis = datetime.datetime.now().strftime("%d-%m-%Y")
-            baslangic = (datetime.datetime.now() - datetime.timedelta(days=730)).strftime("%d-%m-%Y")
-            url = f"https://www.isyatirim.com.tr/_layouts/15/IsYatirim.Website/Common/Data.aspx/HisseTekil?hisse={sembol}&startdate={baslangic}&enddate={bitis}"
-            res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
-            veri_json = res.json()
-            
-            if 'value' in veri_json and veri_json['value']:
-                df = pd.DataFrame(veri_json['value'])
-                df['Date'] = pd.to_datetime(df['HGDG_TARIH'], format='%d-%m-%Y')
-                df.set_index('Date', inplace=True)
-                df.rename(columns={'KAPANIS': 'Close', 'MAX': 'High', 'MIN': 'Low', 'ISLEM_MIKTARI': 'Volume'}, inplace=True)
-                df['Open'] = df['Close'].shift(1).fillna(df['Close'])
-                gunluk_veri = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
-                
-                if len(gunluk_veri) >= 60:
-                    haftalik_veri = gunluk_veri.resample('W').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'})
-                    return gunluk_veri, haftalik_veri
-        except Exception: pass
+        except Exception: 
+            pass
         return None, None
 
     @staticmethod
@@ -292,8 +267,8 @@ class QuantStrategy:
 
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("⚡ Quant Bot v10.0 (Saf Algoritma Motoru)")
-    st.markdown("Yapay Zeka kütüphaneleri kaldırılarak sistem %100 hızlandırıldı. Tüm taramalar *Haftalık Trend, Hacim Patlaması, ADX Testere Koruması* matematiksel filtreleriyle çalışır.")
+    st.title("⚡ Quant Bot v10.1 (Saf Hız ve Stabilite)")
+    st.markdown("İş Yatırım kütüphanesi ve tüm ağır yapay zeka modülleri kaldırılarak sistem tamamen hafifletildi.")
     st.markdown("---")
 
     st.sidebar.markdown("### 🏦 Kurumsal Parametreler")
@@ -341,7 +316,7 @@ def ui_olustur():
             st.error("Veri işlenemedi.")
 
     st.markdown("### 📡 Katılım Endeksi Fırsat Radarı")
-    st.markdown("Hafifletilmiş Algoritma Motoru sayesinde saniyeler içinde 40 hisseyi sırayla tarar. Asla donma veya kilitlenme yapmaz.")
+    st.markdown("Saniyeler içinde 40 hisseyi sırayla tarar. Asla donma veya kilitlenme yapmaz.")
 
     if st.button("🔍 Hızlı Radarı Çalıştır", use_container_width=True):
         bist_katilim_hisseler = [
