@@ -311,9 +311,9 @@ class QuantModel:
             X_train_scaled = scaler.fit_transform(X_train)
             X_latest_scaled = scaler.transform(bugunun_verisi)
             
-            # Çift Motor (RF + XGB)
-            rf_model = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=5)
-            xgb_model = XGBClassifier(n_estimators=100, random_state=42, max_depth=3, eval_metric='logloss')
+            # Çift Motor (RF + XGB) - RAM çökmesini önlemek için n_jobs=1 eklendi
+            rf_model = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=5, n_jobs=1)
+            xgb_model = XGBClassifier(n_estimators=100, random_state=42, max_depth=3, eval_metric='logloss', n_jobs=1)
             
             rf_model.fit(X_train_scaled, y_train)
             xgb_model.fit(X_train_scaled, y_train)
@@ -524,7 +524,8 @@ def ui_olustur():
         ilerleme = st.progress(0)
         sonuclar = []
         
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        # RAM çökmesini önlemek için max_workers 3 yapıldı
+        with ThreadPoolExecutor(max_workers=3) as executor:
             sonuc_haritasi = executor.map(strateji.analiz_et, hisse_listesi)
             for idx, sonuc in enumerate(sonuc_haritasi):
                 if sonuc: sonuclar.append(sonuc)
@@ -564,8 +565,8 @@ def ui_olustur():
         
         bulunan_firsatlar = []
         
-        # CPU çekirdeklerine çok yüklenmemek için max_workers 6 yapıldı
-        with ThreadPoolExecutor(max_workers=6) as executor:
+        # Streamlit Cloud RAM sınırını aşmamak için max_workers 3 yapıldı
+        with ThreadPoolExecutor(max_workers=3) as executor:
             radar_sonuclari = executor.map(strateji.analiz_et, bist_katilim_hisseler)
             for sonuc in radar_sonuclari:
                 if sonuc and ("AL" in sonuc["Karar"]):
