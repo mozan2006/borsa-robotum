@@ -478,8 +478,8 @@ def ui_olustur():
             "ALBRK.IS", "ALFAS.IS", "ASELS.IS", "ASTOR.IS", "BIMAS.IS", "BRSAN.IS", 
             "CANTE.IS", "CIMSA.IS", "CWENE.IS", "DOAS.IS", "EGEEN.IS", "EKGYO.IS", 
             "ENJSA.IS", "ENKAI.IS", "EUPWR.IS", "FROTO.IS", "GESAN.IS", "GWIND.IS", 
-            "HEKTS.IS", "IPEKE.IS", "JANTS.IS", "KCAER.IS", "KMPUR.IS", "KONTR.IS", 
-            "KORDS.IS", "KOZAA.IS", "KOZAL.IS", "KRDMD.IS", "MIATK.IS", "MPARK.IS", 
+            "HEKTS.IS", "JANTS.IS", "KCAER.IS", "KMPUR.IS", "KONTR.IS", 
+            "KORDS.IS", "KRDMD.IS", "MIATK.IS", "MPARK.IS", 
             "OTKAR.IS", "OYAKC.IS", "QUAGR.IS", "SASA.IS", "SMRTG.IS", "TTRAK.IS", 
             "TUKAS.IS", "VESBE.IS", "YEOTK.IS", "YUNSA.IS"
         ]
