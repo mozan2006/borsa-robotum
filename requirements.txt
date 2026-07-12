@@ -6,4 +6,3 @@ ta
 requests
 plotly
 urllib3
-isyatirimhisse
