@@ -377,7 +377,7 @@ def ui_olustur():
             st.error("Veri işlenemedi.")
 
     st.markdown("### 📡 Otomatik Fırsat Radarı (Sadece Katılım Endeksi)")
-    st.markdown("Bu radar günlük "AL" sinyallerini **Haftalık Trend**, **Hacim Patlaması**, **ADX** ve **Göreceli Güç (Alfa)** filtrelerinden geçirerek sahte sinyalleri eler.")
+    st.markdown("Bu radar günlük 'AL' sinyallerini **Haftalık Trend**, **Hacim Patlaması**, **ADX** ve **Göreceli Güç (Alfa)** filtrelerinden geçirerek sahte sinyalleri eler.")
 
     if st.button("🔍 Gelişmiş Radarı Çalıştır", use_container_width=True):
         bist_katilim_hisseler = [
