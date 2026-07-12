@@ -1,7 +1,12 @@
 streamlit
 yfinance
 pandas
-ta
-plotly
 numpy
+ta
+requests
+plotly
+xgboost
 scikit-learn
+urllib3
+beautifulsoup4
+isyatirimhisse
