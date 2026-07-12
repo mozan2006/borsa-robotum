@@ -14,8 +14,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# İş Yatırım kütüphanesi kontrolü
+try:
+    from isyatirimhisse import fetch_data
+except ImportError:
+    fetch_data = None
+
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v10.1 (Saf Hız)", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v10.2 (Stabil Arayüz)", page_icon="⚡", layout="wide")
 
 # --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
 def sifre_kontrol():
@@ -82,7 +88,6 @@ class DataFetcher:
     @staticmethod
     def veri_indir(hisse_kodu):
         try:
-            # İş Yatırım tamamen kaldırıldı, sadece yfinance kullanılıyor.
             ticker = yf.Ticker(hisse_kodu)
             gunluk_veri = ticker.history(period="2y", interval="1d")
             
@@ -267,8 +272,8 @@ class QuantStrategy:
 
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("⚡ Quant Bot v10.1 (Saf Hız ve Stabilite)")
-    st.markdown("İş Yatırım kütüphanesi ve tüm ağır yapay zeka modülleri kaldırılarak sistem tamamen hafifletildi.")
+    st.title("⚡ Quant Bot v10.2 (Stabil Arayüz)")
+    st.markdown("Kapsamlı teknik filtrelerle saniyeler içinde tarama yapar.")
     st.markdown("---")
 
     st.sidebar.markdown("### 🏦 Kurumsal Parametreler")
@@ -298,8 +303,7 @@ def ui_olustur():
             if sonuc: sonuclar.append(sonuc)
             ilerleme.progress((idx + 1) / len(hisse_listesi))
             
-        durum_metni.empty()
-        ilerleme.empty()
+        durum_metni.success("✅ Özel Portföy Analizi Tamamlandı!")
         
         if sonuclar:
             df = pd.DataFrame(sonuclar)
@@ -316,7 +320,6 @@ def ui_olustur():
             st.error("Veri işlenemedi.")
 
     st.markdown("### 📡 Katılım Endeksi Fırsat Radarı")
-    st.markdown("Saniyeler içinde 40 hisseyi sırayla tarar. Asla donma veya kilitlenme yapmaz.")
 
     if st.button("🔍 Hızlı Radarı Çalıştır", use_container_width=True):
         bist_katilim_hisseler = [
@@ -329,7 +332,7 @@ def ui_olustur():
             "TUKAS.IS", "VESBE.IS", "YEOTK.IS", "YUNSA.IS"
         ]
         
-        st.info("Işık hızında sıralı tarama başladı...")
+        st.info("Sıralı tarama başladı, lütfen bekleyin...")
         
         bulunan_firsatlar = []
         ilerleme_radar = st.progress(0)
@@ -342,11 +345,10 @@ def ui_olustur():
                 bulunan_firsatlar.append(sonuc)
             ilerleme_radar.progress((idx + 1) / len(bist_katilim_hisseler))
             
-        durum_radar.empty()
-        ilerleme_radar.empty()
+        durum_radar.success("✅ Tüm Katılım Endeksi Taraması Tamamlandı!")
         
         if bulunan_firsatlar:
-            st.success(f"🚨 Tarama Tamamlandı: Kriterlere Uyan {len(bulunan_firsatlar)} Adet Sinyal Yakalandı!")
+            st.success(f"🚨 Kriterlere Uyan {len(bulunan_firsatlar)} Adet Sinyal Yakalandı!")
             
             sutunlar = st.columns(min(len(bulunan_firsatlar), 3))
             for idx, firsat in enumerate(bulunan_firsatlar):
@@ -373,7 +375,7 @@ def ui_olustur():
                     
                     st.markdown("<br>", unsafe_allow_html=True)
         else:
-            st.warning("Trend, ADX ve hacim filtrelerinden geçebilen güvenli bir fırsat bulunamadı (Piyasa şu an yatay).")
+            st.warning("Filtrelerden geçebilen güvenli bir fırsat bulunamadı (Piyasa şu an yatay).")
 
 if __name__ == "__main__":
     ui_olustur()
