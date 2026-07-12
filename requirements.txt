@@ -5,3 +5,4 @@ ta
 plotly
 numpy
 scikit-learn
+isyatirimhisse
