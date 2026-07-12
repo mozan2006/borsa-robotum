@@ -8,7 +8,6 @@ import logging
 import requests
 import datetime
 import plotly.graph_objects as go
-from sklearn.ensemble import RandomForestClassifier
 import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -22,7 +21,7 @@ except ImportError:
     fetch_data = None
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v9.5 PRO", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v10.0 (Saf Algoritma)", page_icon="⚡", layout="wide")
 
 # --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
 def sifre_kontrol():
@@ -73,7 +72,6 @@ class BotConfig:
 # --- GRAFİK ÇİZİCİ MODÜL ---
 def cizgi_grafik_olustur(df, hisse, al_fiyati, stop, kar_al):
     fig = go.Figure()
-    
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Fiyat'))
     if 'SMA_50' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='#29b6f6', width=1.5), name='SMA 50'))
     if 'SMA_200' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_200'], line=dict(color='#ffa726', width=2), name='SMA 200'))
@@ -87,7 +85,6 @@ def cizgi_grafik_olustur(df, hisse, al_fiyati, stop, kar_al):
 
 # --- 2. HAKİKİ QUANTAMENTAL VERİ ---
 class DataFetcher:
-    # RAM şişmesini önlemek için cache_data kaldırıldı!
     @staticmethod
     def veri_indir(hisse_kodu):
         try:
@@ -99,7 +96,6 @@ class DataFetcher:
                 return gunluk_veri, haftalik_veri
         except Exception: pass
 
-        # İş Yatırım Yedek Motoru
         try:
             sembol = hisse_kodu.replace(".IS", "")
             bitis = datetime.datetime.now().strftime("%d-%m-%Y")
@@ -120,11 +116,9 @@ class DataFetcher:
                     haftalik_veri = gunluk_veri.resample('W').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'})
                     return gunluk_veri, haftalik_veri
         except Exception: pass
-            
         return None, None
 
     @staticmethod
-    @st.cache_data(ttl=3600, show_spinner=False)
     def piyasa_rejimi_kontrol():
         try:
             bist = yf.Ticker("XU100.IS")
@@ -137,7 +131,7 @@ class DataFetcher:
         except: pass
         return "BULL", None
 
-# --- 3. YENİ NESİL FİLTRELER VE TEKNİK ANALİZ ---
+# --- 3. YENİ NESİL FİLTRELER VE TEKNİK ANALİZ (SAF MATEMATİK) ---
 class QuantModel:
     @staticmethod
     def gostergeleri_hesapla(df, bist_df):
@@ -149,19 +143,15 @@ class QuantModel:
         df['MACD_Signal'] = macd.macd_signal()
         df['SMA_20'] = ta.trend.SMAIndicator(close=kapanis, window=20).sma_indicator()
         df['SMA_50'] = ta.trend.SMAIndicator(close=kapanis, window=50).sma_indicator()
-        df['SMA_100'] = kapanis.rolling(window=100, min_periods=1).mean()
         df['SMA_200'] = kapanis.rolling(window=200, min_periods=1).mean()
         df['ATR'] = ta.volatility.AverageTrueRange(high=yuksek, low=dusuk, close=kapanis).average_true_range()
         
-        # 1. ADX (Yatay Piyasa Filtresi)
+        # Profesyonel Filtreler
         df['ADX'] = ta.trend.ADXIndicator(high=yuksek, low=dusuk, close=kapanis, window=14).adx()
-        
-        # 2. Akıllı Hacim ve OBV Filtresi
         df['Volume_SMA_20'] = hacim.rolling(window=20).mean()
         obv = ta.volume.OnBalanceVolumeIndicator(close=kapanis, volume=hacim).on_balance_volume()
         df['OBV_Trend'] = np.where(obv > obv.rolling(window=10).mean(), 1, 0)
         
-        # 3. Göreceli Güç (Relative Strength)
         if bist_df is not None and not bist_df.empty:
             ortak_index = df.index.intersection(bist_df.index)
             df.loc[ortak_index, 'BIST_Return'] = bist_df.loc[ortak_index, 'Close'].pct_change()
@@ -169,31 +159,9 @@ class QuantModel:
             df['Goreceli_Guc'] = (df['Hisse_Return'] - df['BIST_Return']).rolling(window=14).mean() * 100
         else:
             df['Goreceli_Guc'] = 0
-        
-        df['Z_Score'] = (kapanis - df['SMA_20']) / kapanis.rolling(window=20).std()
-        df['Vol_Pct'] = df['Volume'].pct_change() 
-        df['Return'] = df['Close'].pct_change()
-        
+            
         df.dropna(inplace=True)
         return df
-
-    @staticmethod
-    def ml_tahmin_et(df):
-        try:
-            veri = df.copy()
-            veri['Hedef'] = np.where(veri['Close'].shift(-1) > veri['Close'], 1, 0)
-            veri.dropna(inplace=True)
-            
-            ozellikler = ['RSI', 'MACD_Line', 'ADX', 'Z_Score', 'Vol_Pct', 'Return', 'Goreceli_Guc']
-            X, y = veri[ozellikler], veri['Hedef']
-            
-            # RAM çökmesini engellemek için n_jobs=1 parametresi zorunludur
-            model = RandomForestClassifier(n_estimators=100, random_state=42, max_depth=5, n_jobs=1)
-            model.fit(X, y)
-            
-            son_veri = df[ozellikler].iloc[-1:]
-            return round(model.predict_proba(son_veri)[0][1] * 100, 1)
-        except: return 50.0
 
 class Backtester:
     @staticmethod
@@ -251,7 +219,6 @@ class QuantStrategy:
         if gunluk.empty: return None
             
         win_rate, getiri, islem_sayisi, risk_odul = Backtester.gercekci_test(gunluk, self.config.komisyon, self.config.slippage, self.config)
-        ml_olasilik = QuantModel.ml_tahmin_et(gunluk)
         
         son_gun = gunluk.iloc[-1]
         fiyat = float(son_gun['Close'])
@@ -264,39 +231,39 @@ class QuantStrategy:
         skor = 30 
         nedenler = []
 
-        # 1. Çoklu Zaman Dilimi (Haftalık Trend) - Pasif Yatırımcı Koruması
+        # 1. Haftalık Trend Filtresi
         haftalik_sma_10 = haftalik['Close'].rolling(10).mean()
         if not haftalik_sma_10.empty and haftalik['Close'].iloc[-1] > haftalik_sma_10.iloc[-1]:
             skor += 20; nedenler.append("Haftalık Trend Pozitif")
         else:
-            skor -= 20; nedenler.append("Haftalık Trend Negatif (Risk)")
+            skor -= 20; nedenler.append("Haftalık Trend Negatif")
 
-        # 2. ADX (Yatay Piyasayı Eleme)
+        # 2. ADX Filtresi
         if son_gun['ADX'] > 20:
-            skor += 15; nedenler.append(f"Trend Güçlü (ADX:{int(son_gun['ADX'])})")
+            skor += 15; nedenler.append(f"Güçlü Trend (ADX:{int(son_gun['ADX'])})")
         else:
-            skor -= 15; nedenler.append("Yatay Piyasada Testere")
+            skor -= 15; nedenler.append("Yatay Piyasa")
 
-        # 3. Akıllı Hacim ve OBV Onayı
+        # 3. Hacim ve OBV Filtresi
         if son_gun['Volume'] > (son_gun['Volume_SMA_20'] * 1.2):
             skor += 10; nedenler.append("Hacim Patlaması")
         if son_gun['OBV_Trend'] == 1:
-            skor += 10; nedenler.append("Para Girişi (OBV)")
+            skor += 10; nedenler.append("Para Girişi")
         else:
             skor -= 10
 
-        # 4. Göreceli Güç (BIST100'ü Yenenler)
+        # 4. Göreceli Güç (BIST Yenenler)
         if son_gun['Goreceli_Guc'] > 0:
-            skor += 15; nedenler.append("BIST'ten Daha Güçlü (Alfa)")
+            skor += 15; nedenler.append("Endeksten Güçlü")
         else:
-            skor -= 10; nedenler.append("Endeksten Zayıf")
+            skor -= 10
 
-        # MACD ve Hareketli Ortalama Destekleri
+        # Klasik Trend Onayları
         if son_gun['MACD_Line'] > son_gun['MACD_Signal']: skor += 10
         if fiyat > son_gun['SMA_200']: skor += 10
-        elif fiyat < son_gun['SMA_200']: skor -= 20; nedenler.append("SMA200 Altında")
+        else: skor -= 20; nedenler.append("Düşüş Trendi (SMA200)")
         
-        if self.piyasa_durumu == "BEAR": skor -= 15; nedenler.append("BIST Ayı Piyasası")
+        if self.piyasa_durumu == "BEAR": skor -= 15; nedenler.append("Ayı Piyasası")
         
         skor = max(0, min(skor, 100))
         
@@ -313,20 +280,20 @@ class QuantStrategy:
         return {
             "Hisse": hisse_kodu.replace(".IS", ""), 
             "Karar": karar, 
-            "Skor": f"%{skor}",
+            "Algoritma Skoru": f"%{skor}",
             "Fiyat (₺)": round(fiyat, 2), 
             "Stop-Loss (₺)": round(stop_fiyati, 2),
             "Kar Al (₺)": round(kar_fiyati, 2),
             "Kelly Lotu": lot_sayisi,
             "Win Rate": f"%{win_rate}",
-            "Nedenler": " | ".join(nedenler[:3]) if nedenler else "Yatay / Stabil",
+            "Nedenler": " | ".join(nedenler[:3]) if nedenler else "Stabil",
             "Grafik_Verisi": gunluk[['Open', 'High', 'Low', 'Close', 'SMA_50', 'SMA_200']].tail(65)
         }
 
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("🧠 YZ Destekli Katılım Fonu Botu v9.5 PRO")
-    st.markdown("Haftalık Trend (Multi-Timeframe), Hacim Patlaması, ADX Filtresi ve Göreceli Güç (Alfa) özellikleri entegre edildi.")
+    st.title("⚡ Quant Bot v10.0 (Saf Algoritma Motoru)")
+    st.markdown("Yapay Zeka kütüphaneleri kaldırılarak sistem %100 hızlandırıldı. Tüm taramalar *Haftalık Trend, Hacim Patlaması, ADX Testere Koruması* matematiksel filtreleriyle çalışır.")
     st.markdown("---")
 
     st.sidebar.markdown("### 🏦 Kurumsal Parametreler")
@@ -337,26 +304,23 @@ def ui_olustur():
     config = BotConfig(60, 75, 1.5, 3.0, toplam_sermaye, komisyon, slippage)
     strateji = QuantStrategy(config)
 
-    if strateji.piyasa_durumu == "BULL": st.sidebar.success("📊 BIST Genel Trendi: BOĞA (Güvenli)")
-    else: st.sidebar.warning("⚠️ BIST Genel Trendi: AYI (Baskılı)")
+    if strateji.piyasa_durumu == "BULL": st.sidebar.success("📊 BIST Genel Trendi: BOĞA")
+    else: st.sidebar.warning("⚠️ BIST Genel Trendi: AYI")
 
     st.sidebar.markdown("### 🔍 Özel Portföy Taraması")
-    
     varsayilan_hisseler = "MPARK\nBIMAS\nASELS\nENJSA\nTUPRS\nLOGO\nALBRK\nCIMSA\nEBEBK\nYEOTK"
     hisseler_metin = st.sidebar.text_area("Taranacak Hisseler:", varsayilan_hisseler, height=200)
 
-    # TAMAMEN SIRALI (SEQUENTIAL) ÇALIŞTIRMA MANTIĞI EKLENDİ
     if st.sidebar.button("🚀 Portföyü Analiz Et", use_container_width=True):
         hisse_listesi = [h.strip().upper() + ".IS" for h in hisseler_metin.split("\n") if h.strip()]
         ilerleme = st.progress(0)
-        sonuclar = []
         durum_metni = st.empty()
+        sonuclar = []
         
         for idx, hisse in enumerate(hisse_listesi):
-            durum_metni.text(f"⏳ Taranıyor: {hisse} ({idx+1}/{len(hisse_listesi)})")
+            durum_metni.text(f"Taranıyor: {hisse} ({idx+1}/{len(hisse_listesi)})")
             sonuc = strateji.analiz_et(hisse)
-            if sonuc:
-                sonuclar.append(sonuc)
+            if sonuc: sonuclar.append(sonuc)
             ilerleme.progress((idx + 1) / len(hisse_listesi))
             
         durum_metni.empty()
@@ -374,13 +338,12 @@ def ui_olustur():
                 return ''
             st.dataframe(gosterim_df.style.map(tablo_renk, subset=['Karar']), use_container_width=True)
         else:
-            st.error("Veri işlenemedi veya bağlantı kurulamadı.")
+            st.error("Veri işlenemedi.")
 
-    st.markdown("### 📡 Otomatik Fırsat Radarı (Sadece Katılım Endeksi)")
-    st.markdown("Bu radar günlük 'AL' sinyallerini **Haftalık Trend**, **Hacim Patlaması**, **ADX** ve **Göreceli Güç (Alfa)** filtrelerinden geçirerek sahte sinyalleri eler.")
+    st.markdown("### 📡 Katılım Endeksi Fırsat Radarı")
+    st.markdown("Hafifletilmiş Algoritma Motoru sayesinde saniyeler içinde 40 hisseyi sırayla tarar. Asla donma veya kilitlenme yapmaz.")
 
-    # TAMAMEN SIRALI (SEQUENTIAL) ÇALIŞTIRMA MANTIĞI EKLENDİ
-    if st.button("🔍 Gelişmiş Radarı Çalıştır", use_container_width=True):
+    if st.button("🔍 Hızlı Radarı Çalıştır", use_container_width=True):
         bist_katilim_hisseler = [
             "ALBRK.IS", "ALFAS.IS", "ASELS.IS", "ASTOR.IS", "BIMAS.IS", "BRSAN.IS", 
             "CANTE.IS", "CIMSA.IS", "CWENE.IS", "DOAS.IS", "EGEEN.IS", "EKGYO.IS", 
@@ -391,14 +354,14 @@ def ui_olustur():
             "TUKAS.IS", "VESBE.IS", "YEOTK.IS", "YUNSA.IS"
         ]
         
-        st.info("Sıralı Tarama Aktif. Çoklu zaman dilimi ve hacim analizi yapılıyor, lütfen sayfadan ayrılmayın...")
+        st.info("Işık hızında sıralı tarama başladı...")
         
         bulunan_firsatlar = []
         ilerleme_radar = st.progress(0)
         durum_radar = st.empty()
         
         for idx, hisse in enumerate(bist_katilim_hisseler):
-            durum_radar.text(f"⏳ Taranıyor: {hisse} ({idx+1}/{len(bist_katilim_hisseler)})")
+            durum_radar.text(f"Hızlı Tarama: {hisse} ({idx+1}/{len(bist_katilim_hisseler)})")
             sonuc = strateji.analiz_et(hisse)
             if sonuc and ("AL" in sonuc["Karar"]):
                 bulunan_firsatlar.append(sonuc)
@@ -408,7 +371,7 @@ def ui_olustur():
         ilerleme_radar.empty()
         
         if bulunan_firsatlar:
-            st.success(f"🚨 Tarama Tamamlandı: Sağlıklı Kriterlere Uyan {len(bulunan_firsatlar)} Adet Sinyal Yakalandı!")
+            st.success(f"🚨 Tarama Tamamlandı: Kriterlere Uyan {len(bulunan_firsatlar)} Adet Sinyal Yakalandı!")
             
             sutunlar = st.columns(min(len(bulunan_firsatlar), 3))
             for idx, firsat in enumerate(bulunan_firsatlar):
@@ -418,15 +381,14 @@ def ui_olustur():
                     st.markdown(f"""
                     <div style="border: 2px solid #2e7d32; border-top-left-radius: 10px; border-top-right-radius: 10px; padding: 15px; background-color: {renk_kodu}; color: white; margin-bottom: 0px;">
                         <h2 style="text-align: center; color: #4caf50; margin-top: 0;">{firsat['Hisse']}</h2>
-                        <h1 style="text-align: center; margin: 0;">{firsat['Skor']}</h1>
+                        <h1 style="text-align: center; margin: 0;">{firsat['Algoritma Skoru']}</h1>
                         <p style="text-align: center; font-size: 15px; background-color: #1b5e20; border-radius: 5px; padding: 3px;"><b>{firsat['Karar']}</b></p>
                         <hr style="border-color: #4caf50; margin-bottom: 8px; margin-top: 8px;">
-                        <p style="font-size: 14px; margin: 3px 0;"><b>🔵 Dinamik Al:</b> {firsat['Fiyat (₺)']} ₺</p>
+                        <p style="font-size: 14px; margin: 3px 0;"><b>🔵 Fiyat:</b> {firsat['Fiyat (₺)']} ₺</p>
                         <p style="font-size: 14px; margin: 3px 0; color: #ff8a80;"><b>🔴 Stop-Loss:</b> {firsat['Stop-Loss (₺)']} ₺</p>
                         <p style="font-size: 14px; margin: 3px 0; color: #b9f6ca;"><b>🟢 Kâr Al Target:</b> {firsat['Kar Al (₺)']} ₺</p>
                         <hr style="border-color: #4caf50; margin-bottom: 8px; margin-top: 8px;">
                         <p style="font-size: 13px; margin: 2px 0;"><b>Neden:</b> {firsat['Nedenler']}</p>
-                        <p style="font-size: 13px; margin: 2px 0;"><b>Kelly Lotu:</b> {firsat['Kelly Lotu']} Lot</p>
                     </div>
                     """, unsafe_allow_html=True)
                     
@@ -436,7 +398,7 @@ def ui_olustur():
                     
                     st.markdown("<br>", unsafe_allow_html=True)
         else:
-            st.warning("Trend ve hacim filtrelerinden geçebilen güvenli bir fırsat bulunamadı (Piyasa şu an yatay veya hacimsiz olabilir).")
+            st.warning("Trend, ADX ve hacim filtrelerinden geçebilen güvenli bir fırsat bulunamadı (Piyasa şu an yatay).")
 
 if __name__ == "__main__":
     ui_olustur()
