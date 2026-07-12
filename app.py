@@ -475,14 +475,48 @@ def ui_olustur():
 
     if st.button("🔍 Katılım Endeksi Eşzamanlı Radarını Çalıştır", use_container_width=True):
         bist_katilim_hisseler = [
-            "ALBRK.IS", "ALFAS.IS", "ASELS.IS", "ASTOR.IS", "BIMAS.IS", "BRSAN.IS", 
-            "CANTE.IS", "CIMSA.IS", "CWENE.IS", "DOAS.IS", "EGEEN.IS", "EKGYO.IS", 
-            "ENJSA.IS", "ENKAI.IS", "EUPWR.IS", "FROTO.IS", "GESAN.IS", "GWIND.IS", 
-            "HEKTS.IS", "JANTS.IS", "KCAER.IS", "KMPUR.IS", "KONTR.IS", 
-            "KORDS.IS", "KRDMD.IS", "MIATK.IS", "MPARK.IS", 
-            "OTKAR.IS", "OYAKC.IS", "QUAGR.IS", "SASA.IS", "SMRTG.IS", "TTRAK.IS", 
-            "TUKAS.IS", "VESBE.IS", "YEOTK.IS", "YUNSA.IS"
-        ]
+    "AAGYO.IS", "ACSEL.IS", "AHGAZ.IS", "AHSGY.IS", "AKFYE.IS", "AKHAN.IS",
+    "ALBRK.IS", "ALCTL.IS", "ALFAS.IS", "ALKA.IS", "ALKIM.IS", "ALKLC.IS",
+    "ALTNY.IS", "ALVES.IS", "ANGEN.IS", "ARASE.IS", "ARDYZ.IS", "ARENA.IS",
+    "ARFYE.IS", "ASELS.IS", "ATAKP.IS", "ATATP.IS", "AVPGY.IS", "AYEN.IS",
+    "BAHKM.IS", "BAKAB.IS", "BASGZ.IS", "BAYRK.IS", "BEGYO.IS", "BERA.IS",
+    "BESTE.IS", "BETAE.IS", "BIENY.IS", "BIMAS.IS", "BINBN.IS", "BINHO.IS",
+    "BMSTL.IS", "BORSK.IS", "BOSSA.IS", "BRISA.IS", "BRKSN.IS", "BRLSM.IS",
+    "BSOKE.IS", "BUCIM.IS", "BURCE.IS", "BURVA.IS", "BYDNR.IS", "CANTE.IS",
+    "CATES.IS", "CELHA.IS", "CEMTS.IS", "CEMZY.IS", "CIMSA.IS", "CMBTN.IS",
+    "COSMO.IS", "CVKMD.IS", "CWENE.IS", "DAPGM.IS", "DARDL.IS", "DCTTR.IS",
+    "DENGE.IS", "DESPC.IS", "DGATE.IS", "DITAS.IS", "DMSAS.IS", "DNISI.IS",
+    "DOFER.IS", "DOFRB.IS", "DOGUB.IS", "DYOBY.IS", "EBEBK.IS", "EDATA.IS",
+    "EDIP.IS", "EFOR.IS", "EGEPO.IS", "EGGUB.IS", "EGPRO.IS", "EKGYO.IS",
+    "EKSUN.IS", "ELITE.IS", "EMPAE.IS", "ENJSA.IS", "EREGL.IS", "ESCOM.IS",
+    "EUPWR.IS", "EYGYO.IS", "FADE.IS", "FONET.IS", "FORMT.IS", "FORTE.IS",
+    "FRMPL.IS", "FZLGY.IS", "GEDZA.IS", "GENIL.IS", "GENKM.IS", "GENTS.IS",
+    "GEREL.IS", "GESAN.IS", "GLRMK.IS", "GMTAS.IS", "GOKNR.IS", "GOLDA.IS",
+    "GOLTS.IS", "GOODY.IS", "GRSEL.IS", "GRTHO.IS", "GUBRF.IS", "GUNDG.IS",
+    "HATSN.IS", "HKTM.IS", "HOROZ.IS", "HRKET.IS", "IDGYO.IS", "IHEVA.IS",
+    "IHLAS.IS", "IHLGM.IS", "IHYAY.IS", "IMASM.IS", "INGRM.IS", "INTEM.IS",
+    "ISDMR.IS", "IZFAS.IS", "IZINV.IS", "JANTS.IS", "KARSN.IS", "KATMR.IS",
+    "KBORU.IS", "KCAER.IS", "KIMMR.IS", "KLSER.IS", "KLSYN.IS", "KMPUR.IS",
+    "KNFRT.IS", "KOCMT.IS", "KONKA.IS", "KONYA.IS", "KOPOL.IS", "KOTON.IS",
+    "KRDMA.IS", "KRDMB.IS", "KRDMD.IS", "KRGYO.IS", "KRONT.IS", "KRPLS.IS",
+    "KRSTL.IS", "KRVGD.IS", "KTLEV.IS", "KUTPO.IS", "KZBGY.IS", "LKMNH.IS",
+    "LMKDC.IS", "LOGO.IS", "LXGYO.IS", "MAGEN.IS", "MAKIM.IS", "MARBL.IS",
+    "MAVI.IS", "MCARD.IS", "MEDTR.IS", "MEGMT.IS", "MEKAG.IS", "MERCN.IS",
+    "MERKO.IS", "MEYSU.IS", "MNDTR.IS", "MOBTL.IS", "MOPAS.IS", "MPARK.IS",
+    "NETAS.IS", "NETCD.IS", "NTGAZ.IS", "OBAMS.IS", "OBASE.IS", "ONCSM.IS",
+    "ORGE.IS", "OSTIM.IS", "OZATD.IS", "OZGYO.IS", "OZRDN.IS", "OZYSR.IS",
+    "PAGYO.IS", "PARSN.IS", "PASEU.IS", "PENGD.IS", "PENTA.IS", "PETKM.IS",
+    "PKART.IS", "PLTUR.IS", "PNSUT.IS", "POLHO.IS", "PRKME.IS", "QUAGR.IS",
+    "RALYH.IS", "RGYAS.IS", "RNPOL.IS", "RODRG.IS", "RUBNS.IS", "SAFKR.IS",
+    "SAMAT.IS", "SANEL.IS", "SANKO.IS", "SARKY.IS", "SAYAS.IS", "SDTTR.IS",
+    "SEKUR.IS", "SELEC.IS", "SELVA.IS", "SILVR.IS", "SMART.IS", "SNGYO.IS",
+    "SNICA.IS", "SOHOE.IS", "SOKE.IS", "SRVGY.IS", "SUNTK.IS", "SURGY.IS",
+    "SUWEN.IS", "TARKM.IS", "TEZOL.IS", "TKFEN.IS", "TKNSA.IS", "TMPOL.IS",
+    "TUCLK.IS", "TUKAS.IS", "TUPRS.IS", "TUREX.IS", "TURGG.IS", "UCAYM.IS",
+    "UFUK.IS", "ULUSE.IS", "USAK.IS", "VAKKO.IS", "VANGD.IS", "YATAS.IS",
+    "YEOTK.IS", "YIGIT.IS", "YKSLN.IS", "YUNSA.IS", "ZEDUR.IS", "ZERGY.IS"
+]
+
         
         st.info("Eşzamanlı Tarama Aktif. Grafik Çizgileri, RS Analizi ve Akıllı Emir Seviyeleri Hesaplanıyor...")
         
