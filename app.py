@@ -1,4 +1,5 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 import numpy as np
 import ta
@@ -15,7 +16,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Ultimate Quant Bot v10.0 - Değer Odaklı", page_icon="🤖", layout="wide")
 
-# --- 0. GÜVENLİK VE OTURUM YÖNETİMİ (KISS Prensibi) ---
+# --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
+# Şifreleme (encryption) kullanılmayan, basit metin tabanlı erişim kontrolü
 def sifre_kontrol():
     if "giris_basarili" not in st.session_state:
         st.session_state["giris_basarili"] = False
@@ -31,7 +33,6 @@ def sifre_kontrol():
                 submit_button = st.form_submit_button("Sisteme Giriş Yap", use_container_width=True)
                 
                 if submit_button:
-                    # Basit ve şifrelemesiz düz metin kontrolü korunmuştur
                     try:
                         dogru_sifre = st.secrets["sistem_sifresi"]
                     except:
@@ -85,7 +86,7 @@ def cizgi_grafik_olustur(df, hisse, toplama_seviyesi):
     )
     return fig
 
-# --- 2. VERİ YÖNETİMİ (SADECE İŞ YATIRIM API - YFINANCE KALDIRILDI) ---
+# --- 2. VERİ YÖNETİMİ (ÇİFT MOTOR: İŞ YATIRIM + YAHOO YEDEĞİ) ---
 class DataFetcher:
     @staticmethod
     def is_yatirim_api_sorgula(sembol, periyot_gun=730):
@@ -95,9 +96,20 @@ class DataFetcher:
             baslangic_tarihi = (datetime.datetime.now() - datetime.timedelta(days=periyot_gun)).strftime("%d-%m-%Y")
             
             url = f"https://www.isyatirim.com.tr/_layouts/15/IsYatirim.Website/Common/Data.aspx/HisseTekil?hisse={sembol}&startdate={baslangic_tarihi}&enddate={bitis_tarihi}"
-            headers = {'User-Agent': 'Mozilla/5.0'}
             
-            response = requests.get(url, headers=headers, timeout=10)
+            # WAF/Cloudflare engellerini aşmak için tarayıcı kamuflajı
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/javascript, */*; q=0.01',
+                'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8',
+                'Connection': 'keep-alive',
+                'Referer': 'https://www.isyatirim.com.tr/'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=8)
+            if response.status_code != 200:
+                return None
+                
             veri_json = response.json()
             
             if 'value' in veri_json and veri_json['value']:
@@ -115,27 +127,52 @@ class DataFetcher:
                 return gunluk_veri
             return None
         except Exception as e:
-            logging.error(f"İş Yatırım API Hatası ({sembol}): {e}")
+            logging.warning(f"İş Yatırım API engellendi ({sembol}). Yedek motora geçiliyor...")
+            return None
+
+    @staticmethod
+    def yfinance_api_sorgula(sembol):
+        """İş Yatırım bulut IP'sini engellerse devreye girecek yedek motor"""
+        try:
+            if not sembol.endswith(".IS"):
+                sembol = f"{sembol}.IS"
+            ticker = yf.Ticker(sembol)
+            df = ticker.history(period="2y", interval="1d")
+            
+            if not df.empty and len(df) >= 60:
+                gunluk_veri = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
+                # Streamlit/Plotly timezone hatalarını önlemek için saat dilimini temizle
+                gunluk_veri.index = gunluk_veri.index.tz_localize(None).normalize()
+                return gunluk_veri
+            return None
+        except Exception as e:
+            logging.error(f"YFinance Yedek Hatası ({sembol}): {e}")
             return None
 
     @staticmethod
     @st.cache_data(ttl=3600, show_spinner=False)
     def endeks_verisi_getir():
-        """Göreli Güç hesabı için XU100 verisi."""
-        return DataFetcher.is_yatirim_api_sorgula("XU100", 365)
+        veri = DataFetcher.is_yatirim_api_sorgula("XU100", 365)
+        if veri is None:
+            veri = DataFetcher.yfinance_api_sorgula("XU100.IS")
+        return veri
 
     @staticmethod
     def veri_indir(hisse_kodu):
         gunluk_veri = DataFetcher.is_yatirim_api_sorgula(hisse_kodu)
         if gunluk_veri is not None:
-            # İş Yatırım'dan haber çekimi stabil olmadığı için temel rasyo ağırlığı artırılmıştır
-            return gunluk_veri, "Veri Stabil (İş Yatırım)"
-        return None, "Veri Hatası"
+            return gunluk_veri, "İş Yatırım API"
+        
+        gunluk_veri = DataFetcher.yfinance_api_sorgula(hisse_kodu)
+        if gunluk_veri is not None:
+            return gunluk_veri, "Yedek API (Yahoo)"
+            
+        return None, "Bağlantı Hatası"
 
     @staticmethod
     @st.cache_data(ttl=3600, show_spinner=False)
     def piyasa_rejimi_kontrol():
-        df = DataFetcher.is_yatirim_api_sorgula("XU100", 365)
+        df = DataFetcher.endeks_verisi_getir()
         if df is not None and not df.empty and len(df) > 200:
             sma_200 = ta.trend.SMAIndicator(close=df['Close'], window=200).sma_indicator()
             son_kapanis = df['Close'].iloc[-1]
@@ -155,28 +192,23 @@ class QuantModel:
         df['SMA_50'] = ta.trend.SMAIndicator(close=kapanis, window=50).sma_indicator()
         df['SMA_200'] = ta.trend.SMAIndicator(close=kapanis, window=200).sma_indicator()
         
-        # Volatilite ve aşırı satım tespiti için Bollinger 
         bollinger = ta.volatility.BollingerBands(close=kapanis, window=20, window_dev=2)
         df['BB_Lower'] = bollinger.bollinger_lband()
         
         df.dropna(inplace=True)
         return df
 
-# --- 4. VEKTÖREL BACKTEST (ITERROWS KALDIRILDI) ---
+# --- 4. VEKTÖREL BACKTEST ---
 class Backtester:
     @staticmethod
     def vektor_gercekci_test(df):
-        """Döngü (for) yerine vektörel işlemler kullanılarak x100 hızlandırılmış basit karlılık testi"""
         if df is None or len(df) < 50: return 0
         
-        # Basit Strateji: Fiyat SMA200 altındaysa ve RSI 40'tan küçükse al (Kademeli Toplama)
         alis_sinyalleri = (df['Close'] < df['SMA_200']) & (df['RSI'] < 40)
         df['Sinyal'] = np.where(alis_sinyalleri, 1, 0)
         
-        # Gelecekteki 20 günlük getiri (Al ve Tut yaklaşımı)
         df['Gelecek_Getiri'] = df['Close'].shift(-20) / df['Close'] - 1
         
-        # Sinyal oluşan günlerin ortalama 20 günlük getirisi
         basarili_islemler = df[df['Sinyal'] == 1]['Gelecek_Getiri'] > 0
         win_rate = basarili_islemler.mean() * 100 if not basarili_islemler.empty else 50.0
         
@@ -188,7 +220,7 @@ class QuantStrategy:
         self.config = config
 
     def analiz_et(self, hisse_kodu):
-        gunluk, durum = DataFetcher.veri_indir(hisse_kodu)
+        gunluk, kaynak = DataFetcher.veri_indir(hisse_kodu)
         if gunluk is None: return None
             
         gunluk = QuantModel.gostergeleri_hesapla(gunluk)
@@ -206,11 +238,10 @@ class QuantStrategy:
         skor = 50 
         nedenler = []
         
-        # YENİ MANTIK: DÜŞÜŞLER FIRSATTIR (KADEMELİ TOPLAMA)
         if fiyat < sma_200:
             fark_yuzde = ((sma_200 - fiyat) / sma_200) * 100
             if fark_yuzde > 10 and rsi < 40:
-                skor += 30; nedenler.append("Kademeli Toplama (SMA200 Altı İskonto)")
+                skor += 30; nedenler.append("Kademeli Toplama (İskonto)")
             elif rsi < 30:
                 skor += 20; nedenler.append("Aşırı Satım (Değer Bölgesi)")
         else:
@@ -223,7 +254,6 @@ class QuantStrategy:
         if rsi > self.config.rsi_asiri_alim:
             skor -= 25; nedenler.append("Aşırı Alım / Şişkinlik")
 
-        # GÖRELİ GÜÇ (RS)
         xu100 = DataFetcher.endeks_verisi_getir()
         if xu100 is not None and len(gunluk) >= 60 and len(xu100) >= 60:
             hisse_getiri = (fiyat / gunluk['Close'].iloc[-60]) - 1
@@ -234,7 +264,6 @@ class QuantStrategy:
                 
         skor = max(0, min(skor, 100))
         
-        # UZUN VADELİ KARAR MEKANİZMASI
         if skor >= 75: karar = "🔥 UCUZ - KADEMELİ TOPLA"
         elif skor >= 60: karar = "🟢 UZUN VADE AL"
         elif skor <= 40 or rsi > self.config.rsi_asiri_alim: karar = "🔴 ŞİŞKİN - BEKLE"
@@ -244,8 +273,9 @@ class QuantStrategy:
             "Hisse": hisse_kodu.replace(".IS", ""), 
             "Karar": karar, 
             "Skor": f"%{skor}",
+            "Veri Kaynağı": kaynak,
             "Fiyat (₺)": round(fiyat, 2), 
-            "Maliyetlenme Seviyesi (₺)": round(bb_lower, 2), # Toplama için destek seviyesi
+            "Maliyetlenme Seviyesi (₺)": round(bb_lower, 2),
             "Uzun Vade Trend": "POZİTİF" if fiyat > sma_200 else "İSKONTOLU",
             "Win Rate": f"%{win_rate}",
             "Fırsat Özeti": " | ".join(nedenler[:3]) if nedenler else "Yatay / Nötr",
@@ -255,10 +285,9 @@ class QuantStrategy:
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
     st.title("🌱 Değer ve Temettü Odaklı Katılım Botu v10.0")
-    st.markdown("İş Yatırım Altyapısı Aktif. Vektörel Tarama ve Kademeli Toplama Stratejisi ile Çalışır.")
+    st.markdown("Hibrit Veri Altyapısı Aktif. Vektörel Tarama ve Kademeli Toplama Stratejisi ile Çalışır.")
     st.markdown("---")
 
-    # --- YAN MENÜ ---
     st.sidebar.markdown("### 🏦 Portföy Parametreleri")
     toplam_sermaye = st.sidebar.number_input("Yönetilen Bakiye (₺)", min_value=10000, value=100000)
 
@@ -271,13 +300,10 @@ def ui_olustur():
     else:
         st.sidebar.warning("⚠️ BIST Genel Trendi: AYI (Toplama Fırsatı)")
 
-    # --- 1. MANUEL TARAMA BÖLÜMÜ ---
     st.sidebar.markdown("### 🔍 Favori İzleme Listesi")
-    # Düzenli takip edilen hisseler varsayılan olarak eklendi
     varsayilan_hisseler = "MPARK\nBIMAS\nENJSA\nASELS\nLOGO\nTUPRS\nALBRK\nCIMSA\nYEOTK\nEBEBK"
     hisseler_metin = st.sidebar.text_area("Taranacak Hisseler:", varsayilan_hisseler, height=220)
 
-    # UI Yapısı: Tablo ve Fırsat Kartları için Konteynerler
     tablo_alani = st.container()
     firsat_alani = st.container()
 
@@ -286,7 +312,8 @@ def ui_olustur():
         ilerleme = st.progress(0)
         sonuclar = []
         
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        # Hız sınırı cezası (Rate Limit) almamak için max_workers 3'e düşürüldü
+        with ThreadPoolExecutor(max_workers=3) as executor:
             sonuc_haritasi = executor.map(strateji.analiz_et, hisse_listesi)
             for idx, sonuc in enumerate(sonuc_haritasi):
                 if sonuc: sonuclar.append(sonuc)
@@ -308,7 +335,6 @@ def ui_olustur():
                 st.markdown("### 📋 Genel Analiz Tablosu")
                 st.dataframe(gosterim_df.style.map(tablo_renk, subset=['Karar']), use_container_width=True)
             
-            # --- GÜÇLÜ AL / TOPLAMA BÖLGESİ (YENİ UI) ---
             with firsat_alani:
                 toplama_firsatlari = [s for s in sonuclar if "🔥 UCUZ" in s["Karar"]]
                 if toplama_firsatlari:
@@ -327,6 +353,7 @@ def ui_olustur():
                                 <hr style="border-color: #4caf50;">
                                 <p style="font-size: 15px;"><b>Güncel Fiyat:</b> {firsat['Fiyat (₺)']} ₺</p>
                                 <p style="font-size: 15px; color: #81c784;"><b>Maliyetlenme Hedefi:</b> {firsat['Maliyetlenme Seviyesi (₺)']} ₺ civarı</p>
+                                <p style="font-size: 11px; text-align: right; color: #c8e6c9;">{firsat['Veri Kaynağı']}</p>
                             </div>
                             """, unsafe_allow_html=True)
                             
@@ -338,7 +365,7 @@ def ui_olustur():
                                 )
                                 st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         else:
-            st.error("Veri çekilemedi. İş Yatırım sunucuları meşgul olabilir.")
+            st.error("Veri çekilemedi. İş Yatırım ve Yahoo sunucuları yanıt vermiyor.")
 
     # --- 2. OTOMATİK FIRSAT RADARI ---
     st.markdown("### 📡 Katılım Endeksi Fırsat Radarı")
@@ -353,11 +380,11 @@ def ui_olustur():
             "TUKAS", "VESBE", "YEOTK", "YUNSA"
         ]
         
-        st.info("İş Yatırım API üzerinden eşzamanlı vektörel tarama yapılıyor. Lütfen bekleyin...")
+        st.info("Hibrit sistem ile eşzamanlı vektörel tarama yapılıyor. Lütfen bekleyin...")
         
         bulunan_firsatlar = []
         
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=3) as executor:
             radar_sonuclari = executor.map(strateji.analiz_et, bist_katilim_hisseler)
             for sonuc in radar_sonuclari:
                 if sonuc and ("🔥 UCUZ" in sonuc["Karar"]):
@@ -375,6 +402,7 @@ def ui_olustur():
                         <p style="text-align: center; font-size: 13px;"><b>{firsat['Fırsat Özeti']}</b></p>
                         <p style="font-size: 14px;"><b>Fiyat:</b> {firsat['Fiyat (₺)']} ₺</p>
                         <p style="font-size: 14px; color: #81c784;"><b>Maliyet Hedefi:</b> {firsat['Maliyetlenme Seviyesi (₺)']} ₺</p>
+                        <p style="font-size: 11px; text-align: right; color: #c8e6c9;">{firsat['Veri Kaynağı']}</p>
                     </div>
                     <br>
                     """, unsafe_allow_html=True)
