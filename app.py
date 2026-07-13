@@ -14,10 +14,9 @@ warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v10.0 - Değer Odaklı", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v10.1 - Keskin Nişancı", page_icon="🎯", layout="wide")
 
 # --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
-# Şifreleme (encryption) kullanılmayan, basit metin tabanlı erişim kontrolü
 def sifre_kontrol():
     if "giris_basarili" not in st.session_state:
         st.session_state["giris_basarili"] = False
@@ -97,7 +96,6 @@ class DataFetcher:
             
             url = f"https://www.isyatirim.com.tr/_layouts/15/IsYatirim.Website/Common/Data.aspx/HisseTekil?hisse={sembol}&startdate={baslangic_tarihi}&enddate={bitis_tarihi}"
             
-            # WAF/Cloudflare engellerini aşmak için tarayıcı kamuflajı
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
                 'Accept': 'application/json, text/javascript, */*; q=0.01',
@@ -132,7 +130,6 @@ class DataFetcher:
 
     @staticmethod
     def yfinance_api_sorgula(sembol):
-        """İş Yatırım bulut IP'sini engellerse devreye girecek yedek motor"""
         try:
             if not sembol.endswith(".IS"):
                 sembol = f"{sembol}.IS"
@@ -141,7 +138,6 @@ class DataFetcher:
             
             if not df.empty and len(df) >= 60:
                 gunluk_veri = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
-                # Streamlit/Plotly timezone hatalarını önlemek için saat dilimini temizle
                 gunluk_veri.index = gunluk_veri.index.tz_localize(None).normalize()
                 return gunluk_veri
             return None
@@ -214,7 +210,7 @@ class Backtester:
         
         return round(win_rate, 1)
 
-# --- 5. STRATEJİ MOTORU (UZUN VADELİ TOPLAMA MANTIĞI) ---
+# --- 5. STRATEJİ MOTORU (KESKİN NİŞANCI MANTIĞI) ---
 class QuantStrategy:
     def __init__(self, config):
         self.config = config
@@ -235,39 +231,49 @@ class QuantStrategy:
         sma_50 = float(son_gun['SMA_50'])
         bb_lower = float(son_gun['BB_Lower'])
         
-        skor = 50 
+        # SIFIRDAN BAŞLAYAN KATI SKORLAMA
+        skor = 0 
         nedenler = []
         
+        # 1. UZUN VADELİ İSKONTO (En Büyük Ağırlık)
         if fiyat < sma_200:
             fark_yuzde = ((sma_200 - fiyat) / sma_200) * 100
-            if fark_yuzde > 10 and rsi < 40:
-                skor += 30; nedenler.append("Kademeli Toplama (İskonto)")
-            elif rsi < 30:
-                skor += 20; nedenler.append("Aşırı Satım (Değer Bölgesi)")
-        else:
-            if fiyat > sma_50 and son_gun['MACD_Line'] > son_gun['MACD_Signal']:
-                skor += 15; nedenler.append("Güçlü Yükseliş Trendi")
+            if fark_yuzde > 15:
+                skor += 40; nedenler.append(f"Derin İskonto (SMA200 altı %{int(fark_yuzde)})")
+            elif fark_yuzde > 5:
+                skor += 20; nedenler.append("Kısmi İskonto (SMA200 altı)")
         
-        if fiyat <= bb_lower:
-            skor += 15; nedenler.append("Bollinger Alt Bandına Değdi (Ucuz)")
+        # 2. AŞIRI SATIM (Panik Fırsatı)
+        if rsi < 35:
+            skor += 30; nedenler.append(f"Aşırı Satım (RSI: {int(rsi)})")
+        elif rsi < 45:
+            skor += 15; nedenler.append("Soğumuş Bölge (RSI < 45)")
             
-        if rsi > self.config.rsi_asiri_alim:
-            skor -= 25; nedenler.append("Aşırı Alım / Şişkinlik")
-
+        # 3. KISA VADELİ DİP (Bollinger)
+        if fiyat <= bb_lower * 1.02: # %2 opsiyon payı
+            skor += 15; nedenler.append("Bollinger Alt Bandında")
+            
+        # 4. GÖRELİ GÜÇ (Düşerken bile piyasaya direnenler)
         xu100 = DataFetcher.endeks_verisi_getir()
         if xu100 is not None and len(gunluk) >= 60 and len(xu100) >= 60:
             hisse_getiri = (fiyat / gunluk['Close'].iloc[-60]) - 1
             endeks_getiri = (xu100['Close'].iloc[-1] / xu100['Close'].iloc[-60]) - 1
-            
-            if hisse_getiri > (endeks_getiri + 0.05):
+            if hisse_getiri > endeks_getiri:
                 skor += 15; nedenler.append("Endeksten Pozitif Ayrışma")
+
+        # 5. NEGATİF FİLTRELER (Ceza Puanları)
+        if rsi > self.config.rsi_asiri_alim:
+            skor -= 40; nedenler.append("Aşırı Alım / Şişkinlik")
+        if fiyat > sma_200 * 1.20:
+            skor -= 30; nedenler.append("Ortalamadan Çok Uzak (Pahalı)")
                 
         skor = max(0, min(skor, 100))
         
-        if skor >= 75: karar = "🔥 UCUZ - KADEMELİ TOPLA"
-        elif skor >= 60: karar = "🟢 UZUN VADE AL"
-        elif skor <= 40 or rsi > self.config.rsi_asiri_alim: karar = "🔴 ŞİŞKİN - BEKLE"
-        else: karar = "⚪ İZLEMEDE"
+        # SADECE 80 ÜSTÜ "🔥 KESİN TOPLA" ETİKETİ ALABİLİR
+        if skor >= 80: karar = "🔥 KESİN TOPLA (Kriz İskontosu)"
+        elif skor >= 60: karar = "🟢 KADEMELİ AL (Değer Bölgesi)"
+        elif skor <= 30: karar = "🔴 PAHALI / UZAK DUR"
+        else: karar = "⚪ NÖTR / İZLEMEDE"
             
         return {
             "Hisse": hisse_kodu.replace(".IS", ""), 
@@ -284,8 +290,8 @@ class QuantStrategy:
 
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("🌱 Değer ve Temettü Odaklı Katılım Botu v10.0")
-    st.markdown("Hibrit Veri Altyapısı Aktif. Vektörel Tarama ve Kademeli Toplama Stratejisi ile Çalışır.")
+    st.title("🎯 Değer ve Temettü Odaklı Katılım Botu v10.1")
+    st.markdown("Keskin Nişancı Algoritması ve Hibrit Veri Altyapısı Aktif. Sadece gerçek fırsatları filtreler.")
     st.markdown("---")
 
     st.sidebar.markdown("### 🏦 Portföy Parametreleri")
@@ -312,7 +318,6 @@ def ui_olustur():
         ilerleme = st.progress(0)
         sonuclar = []
         
-        # Hız sınırı cezası (Rate Limit) almamak için max_workers 3'e düşürüldü
         with ThreadPoolExecutor(max_workers=3) as executor:
             sonuc_haritasi = executor.map(strateji.analiz_et, hisse_listesi)
             for idx, sonuc in enumerate(sonuc_haritasi):
@@ -325,10 +330,10 @@ def ui_olustur():
             gosterim_df = df.drop(columns=['Grafik_Verisi'])
             
             def tablo_renk(val):
-                if "🔥 UCUZ" in str(val): return 'background-color: #1e4620; color: white; font-weight: bold;'
-                elif "🟢 UZUN VADE AL" in str(val): return 'background-color: #388e3c; color: white;'
-                elif "🔴 ŞİŞKİN" in str(val): return 'background-color: #b71c1c; color: white;'
-                elif "⚪ İZLEMEDE" in str(val): return 'background-color: #546e7a; color: white;'
+                if "🔥" in str(val): return 'background-color: #1e4620; color: white; font-weight: bold;'
+                elif "🟢" in str(val): return 'background-color: #388e3c; color: white;'
+                elif "🔴" in str(val): return 'background-color: #b71c1c; color: white;'
+                elif "⚪" in str(val): return 'background-color: #546e7a; color: white;'
                 return ''
             
             with tablo_alani:
@@ -336,20 +341,22 @@ def ui_olustur():
                 st.dataframe(gosterim_df.style.map(tablo_renk, subset=['Karar']), use_container_width=True)
             
             with firsat_alani:
-                toplama_firsatlari = [s for s in sonuclar if "🔥 UCUZ" in s["Karar"]]
+                # Kendi listende hem Kesin Topla hem Kademeli Al fırsatlarını gör
+                toplama_firsatlari = [s for s in sonuclar if "🔥" in s["Karar"] or "🟢" in s["Karar"]]
                 if toplama_firsatlari:
                     st.markdown("---")
-                    st.markdown("### 🎯 KADEMELİ TOPLAMA BÖLGESİNDEKİ HİSSELER")
-                    st.info("Aşağıdaki hisseler uzun vadeli yatırım stratejisine göre iskontolu bölgeye girmiştir. Kademeli maliyetlenme değerlendirilebilir.")
+                    st.markdown("### 🎯 DEĞER / İSKONTO BÖLGESİNDEKİ HİSSELER")
                     
                     sutunlar = st.columns(min(len(toplama_firsatlari), 3))
                     for idx, firsat in enumerate(toplama_firsatlari):
                         with sutunlar[idx % 3]:
+                            arkaplan = "#1e4620" if "🔥" in firsat['Karar'] else "#2e7d32"
                             st.markdown(f"""
-                            <div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: #1e4620; color: white; margin-bottom: 10px;">
+                            <div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: {arkaplan}; color: white; margin-bottom: 10px;">
                                 <h2 style="text-align: center; color: #a5d6a7; margin-top: 0;">{firsat['Hisse']}</h2>
                                 <h1 style="text-align: center; margin: 0;">{firsat['Skor']}</h1>
-                                <p style="text-align: center; font-size: 14px; background-color: #1b5e20; border-radius: 5px; padding: 4px;"><b>{firsat['Fırsat Özeti']}</b></p>
+                                <p style="text-align: center; font-size: 14px; background-color: #1b5e20; border-radius: 5px; padding: 4px;"><b>{firsat['Karar']}</b></p>
+                                <p style="text-align: center; font-size: 12px; margin-top: -5px;">{firsat['Fırsat Özeti']}</p>
                                 <hr style="border-color: #4caf50;">
                                 <p style="font-size: 15px;"><b>Güncel Fiyat:</b> {firsat['Fiyat (₺)']} ₺</p>
                                 <p style="font-size: 15px; color: #81c784;"><b>Maliyetlenme Hedefi:</b> {firsat['Maliyetlenme Seviyesi (₺)']} ₺ civarı</p>
@@ -368,8 +375,8 @@ def ui_olustur():
             st.error("Veri çekilemedi. İş Yatırım ve Yahoo sunucuları yanıt vermiyor.")
 
     # --- 2. OTOMATİK FIRSAT RADARI ---
-    st.markdown("### 📡 Katılım Endeksi Fırsat Radarı")
-    if st.button("🔍 Katılım Endeksindeki İskontolu Hisseleri Bul", use_container_width=True):
+    st.markdown("### 📡 Katılım Endeksi Fırsat Radarı (Sadece Keskin Nişancı)")
+    if st.button("🔍 Katılım Endeksindeki En Dip Hisseleri Bul", use_container_width=True):
         bist_katilim_hisseler = [
             "ALBRK", "ALFAS", "ASELS", "ASTOR", "BIMAS", "BRSAN", 
             "CANTE", "CIMSA", "CWENE", "DOAS", "EGEEN", "EKGYO", 
@@ -380,18 +387,19 @@ def ui_olustur():
             "TUKAS", "VESBE", "YEOTK", "YUNSA"
         ]
         
-        st.info("Hibrit sistem ile eşzamanlı vektörel tarama yapılıyor. Lütfen bekleyin...")
+        st.info("Algoritma devrede. Sadece ağır iskonto yemiş (Kriz İskontosu) hisseler aranıyor...")
         
         bulunan_firsatlar = []
         
         with ThreadPoolExecutor(max_workers=3) as executor:
             radar_sonuclari = executor.map(strateji.analiz_et, bist_katilim_hisseler)
             for sonuc in radar_sonuclari:
-                if sonuc and ("🔥 UCUZ" in sonuc["Karar"]):
+                # OTOMATİK TARAMADA FİLTRE ÇOK KATI: SADECE 🔥 KESİN TOPLA
+                if sonuc and ("🔥" in sonuc["Karar"]):
                     bulunan_firsatlar.append(sonuc)
         
         if bulunan_firsatlar:
-            st.success(f"🚨 Tarama Tamamlandı: Kademeli Toplanabilecek {len(bulunan_firsatlar)} Şirket Bulundu!")
+            st.success(f"🚨 Keskin Nişancı Radarı Tamamlandı: Kademeli Toplanabilecek {len(bulunan_firsatlar)} Nadide Fırsat Bulundu!")
             sutunlar = st.columns(min(len(bulunan_firsatlar), 3))
             for idx, firsat in enumerate(bulunan_firsatlar):
                 with sutunlar[idx % 3]:
@@ -407,7 +415,7 @@ def ui_olustur():
                     <br>
                     """, unsafe_allow_html=True)
         else:
-            st.warning("Şu an için kriterlere uyan aşırı satım bölgesinde (iskontolu) hisse bulunamadı.")
+            st.warning("Şu an için kriterlere uyan, dibin dibi bölgesinde (kriz iskontolu) bir hisse bulunamadı. Nakitte beklemek en iyisi.")
 
 if __name__ == "__main__":
     ui_olustur()
