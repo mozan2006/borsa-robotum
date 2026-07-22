@@ -14,7 +14,7 @@ warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v10.1 - Keskin Nişancı", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v10.2 - Katılım Odaklı", page_icon="🎯", layout="wide")
 
 # --- 0. GÜVENLİK VE OTURUM YÖNETİMİ ---
 def sifre_kontrol():
@@ -283,29 +283,28 @@ class QuantStrategy:
 
 # --- 6. ARAYÜZ (UI) VE LİSTELER ---
 
-BIST100_LISTESI = [
-    "AEFES", "AGHOL", "AHGAZ", "AKBNK", "AKCNS", "AKFGY", "AKSA", "AKSEN", "ALARK", "ALBRK", 
-    "ALFAS", "ARCLK", "ASELS", "ASTOR", "ASUZU", "BERA", "BIMAS", "BIOEN", "BOBET", "BRSAN", 
-    "BRYAT", "BUCIM", "CANTE", "CCOLA", "CIMSA", "CWENE", "DOAS", "DOHOL", "ECILC", "ECZYT", 
-    "EGEEN", "EKGYO", "ENJSA", "ENKAI", "EREGL", "EUPWR", "EUREN", "FROTO", "GARAN", "GENIL", 
-    "GESAN", "GUBRF", "GWIND", "HALKB", "HEKTS", "IMASM", "IPEKE", "ISCTR", "ISDMR", "ISGYO", 
-    "ISMEN", "IZENR", "KCAER", "KCHOL", "KLSER", "KMPUR", "KONTR", "KONYA", "KORDS", "KOZAA", 
-    "KOZAL", "KRDMD", "KZBGY", "MAVI", "MGROS", "MIATK", "ODAS", "OTKAR", "OYAKC", "PENTI", 
-    "PETKM", "PGSUS", "QUAGR", "SAHOL", "SASA", "SDTTR", "SISE", "SKBNK", "SMRTG", "SOKM", 
-    "TABGD", "TAVHL", "TCELL", "THYAO", "TKFEN", "TOASO", "TSKB", "TTKOM", "TTRAK", "TUKAS", 
-    "TUPRS", "ULKER", "VAKBN", "VESBE", "YKBNK", "YYLGD", "ZOREN"
-]
-
+# BIST 100 TAMAMEN KALDIRILDI.
+# GÜNCEL KATILIM LİSTESİ ANA ODAK HALİNE GETİRİLDİ (Kullanıcının Verdiği 105 Hisse)
 KATILIM_LISTESI = [
-    "ALBRK", "ALFAS", "ASELS", "ASTOR", "BIMAS", "BRSAN", "CANTE", "CIMSA", "CWENE", "DOAS", 
-    "EGEEN", "EKGYO", "ENJSA", "EUPWR", "FROTO", "GESAN", "GWIND", "HEKTS", "JANTS", "KCAER", 
-    "KMPUR", "KONTR", "KORDS", "KRDMD", "MIATK", "MPARK", "OTKAR", "OYAKC", "QUAGR", "SASA", 
-    "SMRTG", "TUKAS", "VESBE", "YEOTK", "YUNSA"
+    "AKFYE", "ALBRK", "ALFAS", "ALKLC", "ALTNY", "ALVES", "ARDYZ", "ASELS",
+    "ATATP", "BEGYO", "BERA", "BIENY", "BIMAS", "BINBN", "BINHO", "BMSTL",
+    "BRISA", "BSOKE", "CANTE", "CEMTS", "CEMZY", "CIMSA", "CVKMD", "CWENE",
+    "DAPGM", "DCTTR", "DOFRB", "EFOR", "EGGUB", "EKGYO", "ENJSA", "EREGL",
+    "EUPWR", "FONET", "FORMT", "FZLGY", "GENIL", "GENTS", "GEREL", "GESAN",
+    "GLRMK", "GOKNR", "GRSEL", "GRTHO", "GUBRF", "GUNDG", "HRKET", "IHLAS",
+    "IHLGM", "IMASM", "ISDMR", "IZFAS", "JANTS", "KARSN", "KATMR", "KBORU",
+    "KCAER", "KLSER", "KMPUR", "KOPOL", "KRDMD", "KTLEV", "KZBGY", "LMKDC",
+    "LOGO", "MAGEN", "MAREN", "MAVI", "MEGMT", "MERCN", "MEYSU", "MOPAS",
+    "MPARK", "NETCD", "NTGAZ", "OBAMS", "ORGE", "OZATD", "PASEU", "PETKM",
+    "POLHO", "QUAGR", "RALYH", "RGYAS", "SAFKR", "SARKY", "SAYAS", "SDTTR",
+    "SELEC", "SNGYO", "SRVGY", "SUNTK", "SURGY", "TARKM", "TEZOL", "TKFEN",
+    "TKNSA", "TUKAS", "TUPRS", "TUREX", "USAK", "YEOTK", "YIGIT", "YUNSA",
+    "ZERGY"
 ]
 
 def ui_olustur():
-    st.title("🎯 Değer ve Temettü Odaklı Katılım Botu v10.1")
-    st.markdown("Keskin Nişancı Algoritması ve Hibrit Veri Altyapısı Aktif. Sadece gerçek fırsatları filtreler.")
+    st.title("🎯 Katılım Odaklı Değer Yatırımı Botu v10.2")
+    st.markdown("Keskin Nişancı Algoritması ve Hibrit Veri Altyapısı Aktif. Sadece Katılım Endeksi Fırsatlarını Filtreler.")
     st.markdown("---")
 
     st.sidebar.markdown("### 🏦 Portföy Parametreleri")
@@ -365,6 +364,7 @@ def ui_olustur():
                         with sutunlar[idx % 3]:
                             arkaplan = "#1e4620" if "🔥" in firsat['Karar'] else "#2e7d32"
                             
+                            # EĞER HİSSE KATILIM LİSTESİNDEYSE ROZET TAK (İzleme listesi taraması için)
                             if firsat['Hisse'] in KATILIM_LISTESI:
                                 katilim_etiketi = '<div style="margin-top: 10px; margin-bottom: 10px;"><span style="background-color: #198754; color: white; padding: 4px 10px; border-radius: 12px; font-size: 13px; font-weight: bold;">✅ Katılım Endeksine Uygun</span></div>'
                             else:
@@ -393,33 +393,33 @@ def ui_olustur():
         else:
             st.error("Veri çekilemedi. İş Yatırım ve Yahoo sunucuları yanıt vermiyor.")
 
-    # --- 2. OTOMATİK FIRSAT RADARI (BIST 100) ---
-    st.markdown("### 📡 BIST 100 Fırsat Radarı (Sadece Keskin Nişancı)")
-    if st.button("🔍 BIST 100 İçindeki En Dip Hisseleri Bul", use_container_width=True):
-        st.info("BIST 100 Algoritması devrede. Sadece ağır iskonto yemiş (Kriz İskontosu) hisseler aranıyor...")
+    # --- 2. OTOMATİK FIRSAT RADARI (SADECE KATILIM LİSTESİ) ---
+    st.markdown("### 📡 Katılım Endeksi Fırsat Radarı")
+    if st.button("🔍 Katılım Listesindeki En Dip Hisseleri Bul", use_container_width=True):
+        st.info("Katılım Algoritması devrede. 105 Hisse içinde ağır iskonto yemiş fırsatlar aranıyor...")
         
         bulunan_firsatlar = []
         ilerleme_radar = st.progress(0)
         
         with ThreadPoolExecutor(max_workers=3) as executor:
-            radar_sonuclari = executor.map(strateji.analiz_et, BIST100_LISTESI)
+            # ARTIK SADECE KULLANICININ VERDİĞİ KATILIM LİSTESİ TARANIYOR
+            radar_sonuclari = executor.map(strateji.analiz_et, KATILIM_LISTESI)
             for idx, sonuc in enumerate(radar_sonuclari):
+                # SADECE 🔥 KESİN TOPLA ALANLAR GETİRİLİR
                 if sonuc and ("🔥" in sonuc["Karar"]):
                     bulunan_firsatlar.append(sonuc)
-                ilerleme_radar.progress((idx + 1) / len(BIST100_LISTESI))
+                ilerleme_radar.progress((idx + 1) / len(KATILIM_LISTESI))
                 
         ilerleme_radar.empty()
         
         if bulunan_firsatlar:
-            st.success(f"🚨 Keskin Nişancı Radarı Tamamlandı: BIST 100 İçinde Kademeli Toplanabilecek {len(bulunan_firsatlar)} Nadide Fırsat Bulundu!")
+            st.success(f"🚨 Radar Tamamlandı: Katılım Listesi İçinde Kademeli Toplanabilecek {len(bulunan_firsatlar)} Nadide Fırsat Bulundu!")
             sutunlar = st.columns(min(len(bulunan_firsatlar), 3))
             for idx, firsat in enumerate(bulunan_firsatlar):
                 with sutunlar[idx % 3]:
                     
-                    if firsat['Hisse'] in KATILIM_LISTESI:
-                        katilim_etiketi = '<div style="margin-top: 10px; margin-bottom: 10px;"><span style="background-color: #198754; color: white; padding: 4px 10px; border-radius: 12px; font-size: 13px; font-weight: bold;">✅ Katılım Endeksine Uygun</span></div>'
-                    else:
-                        katilim_etiketi = ''
+                    # BURADAKİ HİSSELER ZATEN KATILIM LİSTESİNDEN GELDİĞİ İÇİN ROZET DİREKT BASILIR
+                    katilim_etiketi = '<div style="margin-top: 10px; margin-bottom: 10px;"><span style="background-color: #198754; color: white; padding: 4px 10px; border-radius: 12px; font-size: 13px; font-weight: bold;">✅ Katılım Endeksine Uygun</span></div>'
 
                     html_kart_radar = f"""<div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: #1e4620; color: white;">
 <h2 style="text-align: center; color: #a5d6a7;">{firsat['Hisse']}</h2>
@@ -433,7 +433,7 @@ def ui_olustur():
 <br>"""
                     st.markdown(html_kart_radar, unsafe_allow_html=True)
         else:
-            st.warning("Şu an için kriterlere uyan, BIST 100 içinde dibin dibi bölgesinde (kriz iskontolu) bir hisse bulunamadı. Nakitte beklemek en iyisi.")
+            st.warning("Şu an için kriterlere uyan, Katılım Listesi içinde dibin dibi bölgesinde (kriz iskontolu) bir hisse bulunamadı. Nakitte beklemek en iyisi.")
 
 if __name__ == "__main__":
     ui_olustur()
