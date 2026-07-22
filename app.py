@@ -231,11 +231,9 @@ class QuantStrategy:
         sma_50 = float(son_gun['SMA_50'])
         bb_lower = float(son_gun['BB_Lower'])
         
-        # SIFIRDAN BAŞLAYAN KATI SKORLAMA
         skor = 0 
         nedenler = []
         
-        # 1. UZUN VADELİ İSKONTO (En Büyük Ağırlık)
         if fiyat < sma_200:
             fark_yuzde = ((sma_200 - fiyat) / sma_200) * 100
             if fark_yuzde > 15:
@@ -243,17 +241,14 @@ class QuantStrategy:
             elif fark_yuzde > 5:
                 skor += 20; nedenler.append("Kısmi İskonto (SMA200 altı)")
         
-        # 2. AŞIRI SATIM (Panik Fırsatı)
         if rsi < 35:
             skor += 30; nedenler.append(f"Aşırı Satım (RSI: {int(rsi)})")
         elif rsi < 45:
             skor += 15; nedenler.append("Soğumuş Bölge (RSI < 45)")
             
-        # 3. KISA VADELİ DİP (Bollinger)
-        if fiyat <= bb_lower * 1.02: # %2 opsiyon payı
+        if fiyat <= bb_lower * 1.02: 
             skor += 15; nedenler.append("Bollinger Alt Bandında")
             
-        # 4. GÖRELİ GÜÇ (Düşerken bile piyasaya direnenler)
         xu100 = DataFetcher.endeks_verisi_getir()
         if xu100 is not None and len(gunluk) >= 60 and len(xu100) >= 60:
             hisse_getiri = (fiyat / gunluk['Close'].iloc[-60]) - 1
@@ -261,7 +256,6 @@ class QuantStrategy:
             if hisse_getiri > endeks_getiri:
                 skor += 15; nedenler.append("Endeksten Pozitif Ayrışma")
 
-        # 5. NEGATİF FİLTRELER (Ceza Puanları)
         if rsi > self.config.rsi_asiri_alim:
             skor -= 40; nedenler.append("Aşırı Alım / Şişkinlik")
         if fiyat > sma_200 * 1.20:
@@ -269,7 +263,6 @@ class QuantStrategy:
                 
         skor = max(0, min(skor, 100))
         
-        # SADECE 80 ÜSTÜ "🔥 KESİN TOPLA" ETİKETİ ALABİLİR
         if skor >= 80: karar = "🔥 KESİN TOPLA (Kriz İskontosu)"
         elif skor >= 60: karar = "🟢 KADEMELİ AL (Değer Bölgesi)"
         elif skor <= 30: karar = "🔴 PAHALI / UZAK DUR"
@@ -290,7 +283,6 @@ class QuantStrategy:
 
 # --- 6. ARAYÜZ (UI) VE LİSTELER ---
 
-# BIST 100 ve Katılım Listeleri (Veritabanı yerine gömülü listeler - Hızlı Erişim İçin)
 BIST100_LISTESI = [
     "AEFES", "AGHOL", "AHGAZ", "AKBNK", "AKCNS", "AKFGY", "AKSA", "AKSEN", "ALARK", "ALBRK", 
     "ALFAS", "ARCLK", "ASELS", "ASTOR", "ASUZU", "BERA", "BIMAS", "BIOEN", "BOBET", "BRSAN", 
@@ -304,7 +296,6 @@ BIST100_LISTESI = [
     "TUPRS", "ULKER", "VAKBN", "VESBE", "YKBNK", "YYLGD", "ZOREN"
 ]
 
-# TTRAK çıkartıldı, sadece uygun olanlar bırakıldı
 KATILIM_LISTESI = [
     "ALBRK", "ALFAS", "ASELS", "ASTOR", "BIMAS", "BRSAN", "CANTE", "CIMSA", "CWENE", "DOAS", 
     "EGEEN", "EKGYO", "ENJSA", "EUPWR", "FROTO", "GESAN", "GWIND", "HEKTS", "JANTS", "KCAER", 
@@ -374,28 +365,23 @@ def ui_olustur():
                         with sutunlar[idx % 3]:
                             arkaplan = "#1e4620" if "🔥" in firsat['Karar'] else "#2e7d32"
                             
-                            # KATILIM ETİKETİ KONTROLÜ
-                            katilim_etiketi = """
-                            <div style="margin-top: 10px; margin-bottom: 10px;">
-                                <span style="background-color: #198754; color: white; padding: 4px 10px; border-radius: 12px; font-size: 13px; font-weight: bold;">
-                                    ✅ Katılım Endeksine Uygun
-                                </span>
-                            </div>
-                            """ if firsat['Hisse'] in KATILIM_LISTESI else ""
+                            if firsat['Hisse'] in KATILIM_LISTESI:
+                                katilim_etiketi = '<div style="margin-top: 10px; margin-bottom: 10px;"><span style="background-color: #198754; color: white; padding: 4px 10px; border-radius: 12px; font-size: 13px; font-weight: bold;">✅ Katılım Endeksine Uygun</span></div>'
+                            else:
+                                katilim_etiketi = ''
 
-                            st.markdown(f"""
-                            <div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: {arkaplan}; color: white; margin-bottom: 10px;">
-                                <h2 style="text-align: center; color: #a5d6a7; margin-top: 0;">{firsat['Hisse']}</h2>
-                                <h1 style="text-align: center; margin: 0;">{firsat['Skor']}</h1>
-                                {katilim_etiketi}
-                                <p style="text-align: center; font-size: 14px; background-color: #1b5e20; border-radius: 5px; padding: 4px;"><b>{firsat['Karar']}</b></p>
-                                <p style="text-align: center; font-size: 12px; margin-top: -5px;">{firsat['Fırsat Özeti']}</p>
-                                <hr style="border-color: #4caf50;">
-                                <p style="font-size: 15px;"><b>Güncel Fiyat:</b> {firsat['Fiyat (₺)']} ₺</p>
-                                <p style="font-size: 15px; color: #81c784;"><b>Maliyetlenme Hedefi:</b> {firsat['Maliyetlenme Seviyesi (₺)']} ₺ civarı</p>
-                                <p style="font-size: 11px; text-align: right; color: #c8e6c9;">{firsat['Veri Kaynağı']}</p>
-                            </div>
-                            """, unsafe_allow_html=True)
+                            html_kart = f"""<div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: {arkaplan}; color: white; margin-bottom: 10px;">
+<h2 style="text-align: center; color: #a5d6a7; margin-top: 0;">{firsat['Hisse']}</h2>
+<h1 style="text-align: center; margin: 0;">{firsat['Skor']}</h1>
+{katilim_etiketi}
+<p style="text-align: center; font-size: 14px; background-color: #1b5e20; border-radius: 5px; padding: 4px;"><b>{firsat['Karar']}</b></p>
+<p style="text-align: center; font-size: 12px; margin-top: -5px;">{firsat['Fırsat Özeti']}</p>
+<hr style="border-color: #4caf50;">
+<p style="font-size: 15px;"><b>Güncel Fiyat:</b> {firsat['Fiyat (₺)']} ₺</p>
+<p style="font-size: 15px; color: #81c784;"><b>Maliyetlenme Hedefi:</b> {firsat['Maliyetlenme Seviyesi (₺)']} ₺ civarı</p>
+<p style="font-size: 11px; text-align: right; color: #c8e6c9;">{firsat['Veri Kaynağı']}</p>
+</div>"""
+                            st.markdown(html_kart, unsafe_allow_html=True)
                             
                             with st.expander("📊 3 Aylık Seyir"):
                                 fig = cizgi_grafik_olustur(
@@ -407,7 +393,7 @@ def ui_olustur():
         else:
             st.error("Veri çekilemedi. İş Yatırım ve Yahoo sunucuları yanıt vermiyor.")
 
-    # --- 2. OTOMATİK FIRSAT RADARI (BIST 100'E ÇEVRİLDİ) ---
+    # --- 2. OTOMATİK FIRSAT RADARI (BIST 100) ---
     st.markdown("### 📡 BIST 100 Fırsat Radarı (Sadece Keskin Nişancı)")
     if st.button("🔍 BIST 100 İçindeki En Dip Hisseleri Bul", use_container_width=True):
         st.info("BIST 100 Algoritması devrede. Sadece ağır iskonto yemiş (Kriz İskontosu) hisseler aranıyor...")
@@ -418,7 +404,6 @@ def ui_olustur():
         with ThreadPoolExecutor(max_workers=3) as executor:
             radar_sonuclari = executor.map(strateji.analiz_et, BIST100_LISTESI)
             for idx, sonuc in enumerate(radar_sonuclari):
-                # OTOMATİK TARAMADA FİLTRE ÇOK KATI: SADECE 🔥 KESİN TOPLA
                 if sonuc and ("🔥" in sonuc["Karar"]):
                     bulunan_firsatlar.append(sonuc)
                 ilerleme_radar.progress((idx + 1) / len(BIST100_LISTESI))
@@ -431,27 +416,22 @@ def ui_olustur():
             for idx, firsat in enumerate(bulunan_firsatlar):
                 with sutunlar[idx % 3]:
                     
-                    # KATILIM ETİKETİ KONTROLÜ
-                    katilim_etiketi = """
-                    <div style="margin-top: 10px; margin-bottom: 10px;">
-                        <span style="background-color: #198754; color: white; padding: 4px 10px; border-radius: 12px; font-size: 13px; font-weight: bold;">
-                            ✅ Katılım Endeksine Uygun
-                        </span>
-                    </div>
-                    """ if firsat['Hisse'] in KATILIM_LISTESI else ""
+                    if firsat['Hisse'] in KATILIM_LISTESI:
+                        katilim_etiketi = '<div style="margin-top: 10px; margin-bottom: 10px;"><span style="background-color: #198754; color: white; padding: 4px 10px; border-radius: 12px; font-size: 13px; font-weight: bold;">✅ Katılım Endeksine Uygun</span></div>'
+                    else:
+                        katilim_etiketi = ''
 
-                    st.markdown(f"""
-                    <div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: #1e4620; color: white;">
-                        <h2 style="text-align: center; color: #a5d6a7;">{firsat['Hisse']}</h2>
-                        <h1 style="text-align: center;">{firsat['Skor']}</h1>
-                        {katilim_etiketi}
-                        <p style="text-align: center; font-size: 13px;"><b>{firsat['Fırsat Özeti']}</b></p>
-                        <p style="font-size: 14px;"><b>Fiyat:</b> {firsat['Fiyat (₺)']} ₺</p>
-                        <p style="font-size: 14px; color: #81c784;"><b>Maliyet Hedefi:</b> {firsat['Maliyetlenme Seviyesi (₺)']} ₺</p>
-                        <p style="font-size: 11px; text-align: right; color: #c8e6c9;">{firsat['Veri Kaynağı']}</p>
-                    </div>
-                    <br>
-                    """, unsafe_allow_html=True)
+                    html_kart_radar = f"""<div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: #1e4620; color: white;">
+<h2 style="text-align: center; color: #a5d6a7;">{firsat['Hisse']}</h2>
+<h1 style="text-align: center;">{firsat['Skor']}</h1>
+{katilim_etiketi}
+<p style="text-align: center; font-size: 13px;"><b>{firsat['Fırsat Özeti']}</b></p>
+<p style="font-size: 14px;"><b>Fiyat:</b> {firsat['Fiyat (₺)']} ₺</p>
+<p style="font-size: 14px; color: #81c784;"><b>Maliyet Hedefi:</b> {firsat['Maliyetlenme Seviyesi (₺)']} ₺</p>
+<p style="font-size: 11px; text-align: right; color: #c8e6c9;">{firsat['Veri Kaynağı']}</p>
+</div>
+<br>"""
+                    st.markdown(html_kart_radar, unsafe_allow_html=True)
         else:
             st.warning("Şu an için kriterlere uyan, BIST 100 içinde dibin dibi bölgesinde (kriz iskontolu) bir hisse bulunamadı. Nakitte beklemek en iyisi.")
 
