@@ -288,7 +288,30 @@ class QuantStrategy:
             "Grafik_Verisi": gunluk[['Open', 'High', 'Low', 'Close', 'SMA_50', 'SMA_200']].tail(90)
         }
 
-# --- 6. ARAYÜZ (UI) ---
+# --- 6. ARAYÜZ (UI) VE LİSTELER ---
+
+# BIST 100 ve Katılım Listeleri (Veritabanı yerine gömülü listeler - Hızlı Erişim İçin)
+BIST100_LISTESI = [
+    "AEFES", "AGHOL", "AHGAZ", "AKBNK", "AKCNS", "AKFGY", "AKSA", "AKSEN", "ALARK", "ALBRK", 
+    "ALFAS", "ARCLK", "ASELS", "ASTOR", "ASUZU", "BERA", "BIMAS", "BIOEN", "BOBET", "BRSAN", 
+    "BRYAT", "BUCIM", "CANTE", "CCOLA", "CIMSA", "CWENE", "DOAS", "DOHOL", "ECILC", "ECZYT", 
+    "EGEEN", "EKGYO", "ENJSA", "ENKAI", "EREGL", "EUPWR", "EUREN", "FROTO", "GARAN", "GENIL", 
+    "GESAN", "GUBRF", "GWIND", "HALKB", "HEKTS", "IMASM", "IPEKE", "ISCTR", "ISDMR", "ISGYO", 
+    "ISMEN", "IZENR", "KCAER", "KCHOL", "KLSER", "KMPUR", "KONTR", "KONYA", "KORDS", "KOZAA", 
+    "KOZAL", "KRDMD", "KZBGY", "MAVI", "MGROS", "MIATK", "ODAS", "OTKAR", "OYAKC", "PENTI", 
+    "PETKM", "PGSUS", "QUAGR", "SAHOL", "SASA", "SDTTR", "SISE", "SKBNK", "SMRTG", "SOKM", 
+    "TABGD", "TAVHL", "TCELL", "THYAO", "TKFEN", "TOASO", "TSKB", "TTKOM", "TTRAK", "TUKAS", 
+    "TUPRS", "ULKER", "VAKBN", "VESBE", "YKBNK", "YYLGD", "ZOREN"
+]
+
+# TTRAK çıkartıldı, sadece uygun olanlar bırakıldı
+KATILIM_LISTESI = [
+    "ALBRK", "ALFAS", "ASELS", "ASTOR", "BIMAS", "BRSAN", "CANTE", "CIMSA", "CWENE", "DOAS", 
+    "EGEEN", "EKGYO", "ENJSA", "EUPWR", "FROTO", "GESAN", "GWIND", "HEKTS", "JANTS", "KCAER", 
+    "KMPUR", "KONTR", "KORDS", "KRDMD", "MIATK", "MPARK", "OTKAR", "OYAKC", "QUAGR", "SASA", 
+    "SMRTG", "TUKAS", "VESBE", "YEOTK", "YUNSA"
+]
+
 def ui_olustur():
     st.title("🎯 Değer ve Temettü Odaklı Katılım Botu v10.1")
     st.markdown("Keskin Nişancı Algoritması ve Hibrit Veri Altyapısı Aktif. Sadece gerçek fırsatları filtreler.")
@@ -341,7 +364,6 @@ def ui_olustur():
                 st.dataframe(gosterim_df.style.map(tablo_renk, subset=['Karar']), use_container_width=True)
             
             with firsat_alani:
-                # Kendi listende hem Kesin Topla hem Kademeli Al fırsatlarını gör
                 toplama_firsatlari = [s for s in sonuclar if "🔥" in s["Karar"] or "🟢" in s["Karar"]]
                 if toplama_firsatlari:
                     st.markdown("---")
@@ -351,10 +373,21 @@ def ui_olustur():
                     for idx, firsat in enumerate(toplama_firsatlari):
                         with sutunlar[idx % 3]:
                             arkaplan = "#1e4620" if "🔥" in firsat['Karar'] else "#2e7d32"
+                            
+                            # KATILIM ETİKETİ KONTROLÜ
+                            katilim_etiketi = """
+                            <div style="margin-top: 10px; margin-bottom: 10px;">
+                                <span style="background-color: #198754; color: white; padding: 4px 10px; border-radius: 12px; font-size: 13px; font-weight: bold;">
+                                    ✅ Katılım Endeksine Uygun
+                                </span>
+                            </div>
+                            """ if firsat['Hisse'] in KATILIM_LISTESI else ""
+
                             st.markdown(f"""
                             <div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: {arkaplan}; color: white; margin-bottom: 10px;">
                                 <h2 style="text-align: center; color: #a5d6a7; margin-top: 0;">{firsat['Hisse']}</h2>
                                 <h1 style="text-align: center; margin: 0;">{firsat['Skor']}</h1>
+                                {katilim_etiketi}
                                 <p style="text-align: center; font-size: 14px; background-color: #1b5e20; border-radius: 5px; padding: 4px;"><b>{firsat['Karar']}</b></p>
                                 <p style="text-align: center; font-size: 12px; margin-top: -5px;">{firsat['Fırsat Özeti']}</p>
                                 <hr style="border-color: #4caf50;">
@@ -374,39 +407,44 @@ def ui_olustur():
         else:
             st.error("Veri çekilemedi. İş Yatırım ve Yahoo sunucuları yanıt vermiyor.")
 
-    # --- 2. OTOMATİK FIRSAT RADARI ---
-    st.markdown("### 📡 Katılım Endeksi Fırsat Radarı (Sadece Keskin Nişancı)")
-    if st.button("🔍 Katılım Endeksindeki En Dip Hisseleri Bul", use_container_width=True):
-        bist_katilim_hisseler = [
-            "ALBRK", "ALFAS", "ASELS", "ASTOR", "BIMAS", "BRSAN", 
-            "CANTE", "CIMSA", "CWENE", "DOAS", "EGEEN", "EKGYO", 
-            "ENJSA", "ENKAI", "EUPWR", "FROTO", "GESAN", "GWIND", 
-            "HEKTS", "JANTS", "KCAER", "KMPUR", "KONTR", 
-            "KORDS", "KRDMD", "MIATK", "MPARK", 
-            "OTKAR", "OYAKC", "QUAGR", "SASA", "SMRTG", "TTRAK", 
-            "TUKAS", "VESBE", "YEOTK", "YUNSA"
-        ]
-        
-        st.info("Algoritma devrede. Sadece ağır iskonto yemiş (Kriz İskontosu) hisseler aranıyor...")
+    # --- 2. OTOMATİK FIRSAT RADARI (BIST 100'E ÇEVRİLDİ) ---
+    st.markdown("### 📡 BIST 100 Fırsat Radarı (Sadece Keskin Nişancı)")
+    if st.button("🔍 BIST 100 İçindeki En Dip Hisseleri Bul", use_container_width=True):
+        st.info("BIST 100 Algoritması devrede. Sadece ağır iskonto yemiş (Kriz İskontosu) hisseler aranıyor...")
         
         bulunan_firsatlar = []
+        ilerleme_radar = st.progress(0)
         
         with ThreadPoolExecutor(max_workers=3) as executor:
-            radar_sonuclari = executor.map(strateji.analiz_et, bist_katilim_hisseler)
-            for sonuc in radar_sonuclari:
+            radar_sonuclari = executor.map(strateji.analiz_et, BIST100_LISTESI)
+            for idx, sonuc in enumerate(radar_sonuclari):
                 # OTOMATİK TARAMADA FİLTRE ÇOK KATI: SADECE 🔥 KESİN TOPLA
                 if sonuc and ("🔥" in sonuc["Karar"]):
                     bulunan_firsatlar.append(sonuc)
+                ilerleme_radar.progress((idx + 1) / len(BIST100_LISTESI))
+                
+        ilerleme_radar.empty()
         
         if bulunan_firsatlar:
-            st.success(f"🚨 Keskin Nişancı Radarı Tamamlandı: Kademeli Toplanabilecek {len(bulunan_firsatlar)} Nadide Fırsat Bulundu!")
+            st.success(f"🚨 Keskin Nişancı Radarı Tamamlandı: BIST 100 İçinde Kademeli Toplanabilecek {len(bulunan_firsatlar)} Nadide Fırsat Bulundu!")
             sutunlar = st.columns(min(len(bulunan_firsatlar), 3))
             for idx, firsat in enumerate(bulunan_firsatlar):
                 with sutunlar[idx % 3]:
+                    
+                    # KATILIM ETİKETİ KONTROLÜ
+                    katilim_etiketi = """
+                    <div style="margin-top: 10px; margin-bottom: 10px;">
+                        <span style="background-color: #198754; color: white; padding: 4px 10px; border-radius: 12px; font-size: 13px; font-weight: bold;">
+                            ✅ Katılım Endeksine Uygun
+                        </span>
+                    </div>
+                    """ if firsat['Hisse'] in KATILIM_LISTESI else ""
+
                     st.markdown(f"""
                     <div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: #1e4620; color: white;">
                         <h2 style="text-align: center; color: #a5d6a7;">{firsat['Hisse']}</h2>
                         <h1 style="text-align: center;">{firsat['Skor']}</h1>
+                        {katilim_etiketi}
                         <p style="text-align: center; font-size: 13px;"><b>{firsat['Fırsat Özeti']}</b></p>
                         <p style="font-size: 14px;"><b>Fiyat:</b> {firsat['Fiyat (₺)']} ₺</p>
                         <p style="font-size: 14px; color: #81c784;"><b>Maliyet Hedefi:</b> {firsat['Maliyetlenme Seviyesi (₺)']} ₺</p>
@@ -415,7 +453,7 @@ def ui_olustur():
                     <br>
                     """, unsafe_allow_html=True)
         else:
-            st.warning("Şu an için kriterlere uyan, dibin dibi bölgesinde (kriz iskontolu) bir hisse bulunamadı. Nakitte beklemek en iyisi.")
+            st.warning("Şu an için kriterlere uyan, BIST 100 içinde dibin dibi bölgesinde (kriz iskontolu) bir hisse bulunamadı. Nakitte beklemek en iyisi.")
 
 if __name__ == "__main__":
     ui_olustur()
