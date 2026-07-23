@@ -15,7 +15,7 @@ warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v11.0 - Hibrit Sistem", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v11.1 - Risk Optimizasyonlu", page_icon="🎯", layout="wide")
 
 # --- CSS VE TASARIM ---
 st.markdown("""
@@ -63,10 +63,12 @@ if st.sidebar.button("🚪 Çıkış Yap", use_container_width=True):
 
 # --- 1. YAPILANDIRMA VE LİSTELER ---
 class BotConfig:
-    def __init__(self, rsi_asiri_satim, rsi_asiri_alim, sermaye):
+    def __init__(self, rsi_asiri_satim, rsi_asiri_alim, sermaye, atr_stop_carpan, risk_odul_orani):
         self.rsi_asiri_satim = rsi_asiri_satim
         self.rsi_asiri_alim = rsi_asiri_alim
         self.sermaye = sermaye
+        self.atr_stop_carpan = atr_stop_carpan  # Risk yönetimi için ATR çarpanı (Örn: 1.5)
+        self.risk_odul_orani = risk_odul_orani  # En az 2.0 (Alınan riskin 2 katı ödül)
 
 KATILIM_LISTESI = [
     "AKFYE", "ALBRK", "ALFAS", "ALKLC", "ALTNY", "ALVES", "ARDYZ", "ASELS",
@@ -85,7 +87,7 @@ KATILIM_LISTESI = [
     "ZERGY"
 ]
 
-# --- 2. İSTİHBARAT MOTORU (HABER & KAP KAZIMA) ---
+# --- 2. İSTİHBARAT MOTORU ---
 @st.cache_data(ttl=900, show_spinner=False)
 def haberleri_kazi(sorgu, limit=3):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -107,7 +109,7 @@ def haberleri_kazi(sorgu, limit=3):
         return makaleler
     except: return []
 
-# --- 3. VERİ YÖNETİMİ (ÇİFT MOTOR) ---
+# --- 3. VERİ YÖNETİMİ ---
 class DataFetcher:
     @staticmethod
     def is_yatirim_api_sorgula(sembol, periyot_gun=730):
@@ -168,15 +170,17 @@ class DataFetcher:
             return "BULL" if df['Close'].iloc[-1] > sma_200.iloc[-1] else "BEAR"
         return "BULL"
 
-# --- 4. TEKNİK ANALİZ VE BACKTEST ---
+# --- 4. TEKNİK ANALİZ VE RİSK YÖNETİMİ ---
 class QuantModel:
     @staticmethod
     def gostergeleri_hesapla(df):
-        kapanis = df['Close']
+        kapanis, yuksek, dusuk, hacim = df['Close'], df['High'], df['Low'], df['Volume']
         df['RSI'] = ta.momentum.RSIIndicator(close=kapanis).rsi()
         df['SMA_50'] = ta.trend.SMAIndicator(close=kapanis, window=50).sma_indicator()
         df['SMA_200'] = ta.trend.SMAIndicator(close=kapanis, window=200).sma_indicator()
         df['BB_Lower'] = ta.volatility.BollingerBands(close=kapanis, window=20, window_dev=2).bollinger_lband()
+        df['ATR'] = ta.volatility.AverageTrueRange(high=yuksek, low=dusuk, close=kapanis).average_true_range()
+        df['Hacim_Ort'] = hacim.rolling(window=20).mean()
         df.dropna(inplace=True)
         return df
 
@@ -190,7 +194,7 @@ class Backtester:
         basarili_islemler = df[df['Sinyal'] == 1]['Gelecek_Getiri'] > 0
         return round(basarili_islemler.mean() * 100 if not basarili_islemler.empty else 50.0, 1)
 
-# --- 5. STRATEJİ MOTORU (KESKİN NİŞANCI) ---
+# --- 5. STRATEJİ MOTORU (RİSK KONTROLLÜ) ---
 class QuantStrategy:
     def __init__(self, config):
         self.config = config
@@ -204,8 +208,11 @@ class QuantStrategy:
             
         win_rate = Backtester.vektor_gercekci_test(gunluk)
         son_gun = gunluk.iloc[-1]
-        fiyat, rsi = float(son_gun['Close']), float(son_gun['RSI'])
-        sma_200, bb_lower = float(son_gun['SMA_200']), float(son_gun['BB_Lower'])
+        fiyat, rsi, atr = float(son_gun['Close']), float(son_gun['RSI']), float(son_gun['ATR'])
+        sma_200, bb_lower, hacim, hacim_ort = float(son_gun['SMA_200']), float(son_gun['BB_Lower']), float(son_gun['Volume']), float(son_gun['Hacim_Ort'])
+        
+        # --- LİKİDİTE FİLTRESİ ---
+        if hacim < hacim_ort * 0.5: return None  # Çok sığ tahtaları direkt ele
         
         skor, nedenler = 0, []
         if fiyat < sma_200:
@@ -229,31 +236,43 @@ class QuantStrategy:
         elif skor <= 30: karar = "🔴 UZAK DUR"
         else: karar = "⚪ NÖTR"
             
+        # --- RİSK YÖNETİMİ SEVİYELERİ ---
+        stop_loss = round(fiyat - (atr * self.config.atr_stop_carpan), 2)
+        risk_mesafesi = fiyat - stop_loss
+        hedef_fiyat = round(fiyat + (risk_mesafesi * self.config.risk_odul_orani), 2)
+            
         return {
             "Hisse": hisse_kodu.replace(".IS", ""), "Karar": karar, "Skor": f"%{skor}",
-            "Kaynak": kaynak, "Fiyat": round(fiyat, 2), "Maliyet": round(bb_lower, 2),
+            "Kaynak": kaynak, "Fiyat": round(fiyat, 2), "Stop Loss": stop_loss, "Hedef Fiyat": hedef_fiyat,
             "Win Rate": f"%{win_rate}", "Fırsat Özeti": " | ".join(nedenler[:3]) if nedenler else "Yatay",
             "Grafik_Verisi": gunluk[['Open', 'High', 'Low', 'Close', 'SMA_50', 'SMA_200']].tail(90)
         }
 
-def cizgi_grafik_olustur(df, hisse, toplama_seviyesi):
+def cizgi_grafik_olustur(df, hisse, stop_seviyesi, hedef_seviyesi):
     fig = go.Figure()
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close']))
     if 'SMA_50' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='#29b6f6', width=1.5), name='SMA 50'))
     if 'SMA_200' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_200'], line=dict(color='#ffa726', width=2), name='SMA 200'))
-    fig.add_hline(y=toplama_seviyesi, line_dash="dot", line_color="#4fc3f7")
+    
+    # Risk Çizgileri
+    fig.add_hline(y=stop_seviyesi, line_dash="dash", line_color="#ff5252", annotation_text="Stop-Loss", annotation_position="bottom right")
+    fig.add_hline(y=hedef_seviyesi, line_dash="dash", line_color="#69f0ae", annotation_text="Hedef Fiyat", annotation_position="top right")
+    
     fig.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=300, xaxis_rangeslider_visible=False, template="plotly_dark", showlegend=False)
     return fig
 
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("🎯 Hibrit Quant & İstihbarat Botu v11.0")
-    st.markdown("Katılım Endeksi üzerinde matematiksel analiz yapar. Sadece **AL sinyali veren hisselerin** KAP ve Medya haberlerini web'den çeker.")
+    st.title("🎯 Hibrit Quant & İstihbarat Botu v11.1 (Risk Optimizasyonlu)")
+    st.markdown("Katılım Endeksi üzerinde matematiksel analiz yapar. Her sinyal için **Stop-Loss** ve **Hedef Fiyat** üretir.")
     st.markdown("---")
 
-    st.sidebar.markdown("### 🏦 Portföy Parametreleri")
+    st.sidebar.markdown("### 🏦 Portföy & Risk Parametreleri")
     toplam_sermaye = st.sidebar.number_input("Yönetilen Bakiye (₺)", min_value=10000, value=100000)
-    config = BotConfig(rsi_asiri_satim=35, rsi_asiri_alim=70, sermaye=toplam_sermaye)
+    atr_carpan = st.sidebar.slider("Stop-Loss ATR Çarpanı", min_value=1.0, max_value=3.0, value=1.5, step=0.25)
+    risk_odul = st.sidebar.slider("Risk / Ödül Oranı", min_value=1.5, max_value=4.0, value=2.0, step=0.5)
+    
+    config = BotConfig(rsi_asiri_satim=35, rsi_asiri_alim=70, sermaye=toplam_sermaye, atr_stop_carpan=atr_carpan, risk_odul_orani=risk_odul)
     strateji = QuantStrategy(config)
 
     piyasa_durumu = DataFetcher.piyasa_rejimi_kontrol()
@@ -299,7 +318,7 @@ def ui_olustur():
         ilerleme_radar.empty()
         
         if bulunan_firsatlar:
-            st.success(f"🚨 Tarama Tamamlandı! Kademeli toplanabilecek {len(bulunan_firsatlar)} fırsat bulundu.")
+            st.success(f"🚨 Tarama Tamamlandı! Risk kontrollü toplanabilecek {len(bulunan_firsatlar)} fırsat bulundu.")
             sutunlar = st.columns(min(len(bulunan_firsatlar), 3))
             
             for idx, firsat in enumerate(bulunan_firsatlar):
@@ -312,14 +331,16 @@ def ui_olustur():
 <div style="text-align:center; margin-bottom:10px;"><span style="background-color: #198754; padding: 3px 8px; border-radius: 8px; font-size: 12px; font-weight: bold;">✅ Katılım Endeksi</span></div>
 <p style="text-align: center; font-size: 13px;"><b>{firsat['Fırsat Özeti']}</b></p>
 <hr style="border-color: #4caf50;">
-<p style="font-size: 14px;"><b>Fiyat:</b> {firsat['Fiyat']} ₺ | <b>Hedef:</b> {firsat['Maliyet']} ₺</p>
-<p style="font-size: 11px; text-align: right; color: #c8e6c9;">Tarihsel Başarı: {firsat['Win Rate']} | Veri: {firsat['Kaynak']}</p>
+<p style="font-size: 13px; margin:2px 0;"><b>Giriş Fiyatı:</b> {firsat['Fiyat']} ₺</p>
+<p style="font-size: 13px; margin:2px 0; color: #ff8a80;"><b>🔴 Stop Loss:</b> {firsat['Stop Loss']} ₺</p>
+<p style="font-size: 13px; margin:2px 0; color: #b9f6ca;"><b>🟢 Hedef Fiyat:</b> {firsat['Hedef Fiyat']} ₺</p>
+<p style="font-size: 11px; text-align: right; color: #c8e6c9; margin-top:8px;">Başarı: {firsat['Win Rate']} | Veri: {firsat['Kaynak']}</p>
 </div>"""
                     st.markdown(html_kart, unsafe_allow_html=True)
                     
                     # TEKNİK GRAFİK
-                    with st.expander("📊 Teknik Görünüm"):
-                        st.plotly_chart(cizgi_grafik_olustur(firsat['Grafik_Verisi'], firsat['Hisse'], firsat['Maliyet']), use_container_width=True, config={'displayModeBar': False})
+                    with st.expander("📊 Teknik Görünüm & Risk Haritası"):
+                        st.plotly_chart(cizgi_grafik_olustur(firsat['Grafik_Verisi'], firsat['Hisse'], firsat['Stop Loss'], firsat['Hedef Fiyat']), use_container_width=True, config={'displayModeBar': False})
                     
                     # İSTİHBARAT KISMI (WEB SCRAPING)
                     with st.expander("🕵️‍♂️ KAP ve Haber İstihbaratı", expanded=True):
@@ -346,7 +367,7 @@ def ui_olustur():
                         else: st.caption("Medyada güncel haber bulunamadı.")
                     st.markdown("<br>", unsafe_allow_html=True)
         else:
-            st.warning("Şu an için kriterlere uyan, dibin dibi bölgesinde bir katılım hissesi bulunamadı. Nakit kraldır.")
+            st.warning("Şu an için risk/ödül kriterlerine uyan, likit ve dip bölgede bir katılım hissesi bulunamadı.")
 
 if __name__ == "__main__":
     ui_olustur()
