@@ -15,7 +15,7 @@ warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v11.1 - Risk Optimizasyonlu", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v11.2 - Düşen Bıçak Korumalı", page_icon="🎯", layout="wide")
 
 # --- CSS VE TASARIM ---
 st.markdown("""
@@ -67,8 +67,8 @@ class BotConfig:
         self.rsi_asiri_satim = rsi_asiri_satim
         self.rsi_asiri_alim = rsi_asiri_alim
         self.sermaye = sermaye
-        self.atr_stop_carpan = atr_stop_carpan  # Risk yönetimi için ATR çarpanı (Örn: 1.5)
-        self.risk_odul_orani = risk_odul_orani  # En az 2.0 (Alınan riskin 2 katı ödül)
+        self.atr_stop_carpan = atr_stop_carpan
+        self.risk_odul_orani = risk_odul_orani
 
 KATILIM_LISTESI = [
     "AKFYE", "ALBRK", "ALFAS", "ALKLC", "ALTNY", "ALVES", "ARDYZ", "ASELS",
@@ -170,7 +170,7 @@ class DataFetcher:
             return "BULL" if df['Close'].iloc[-1] > sma_200.iloc[-1] else "BEAR"
         return "BULL"
 
-# --- 4. TEKNİK ANALİZ VE RİSK YÖNETİMİ ---
+# --- 4. TEKNİK ANALİZ VE GÖSTERGELER ---
 class QuantModel:
     @staticmethod
     def gostergeleri_hesapla(df):
@@ -180,6 +180,12 @@ class QuantModel:
         df['SMA_200'] = ta.trend.SMAIndicator(close=kapanis, window=200).sma_indicator()
         df['BB_Lower'] = ta.volatility.BollingerBands(close=kapanis, window=20, window_dev=2).bollinger_lband()
         df['ATR'] = ta.volatility.AverageTrueRange(high=yuksek, low=dusuk, close=kapanis).average_true_range()
+        
+        # MACD Göstergesi (Düşen bıçak filtresi için hayati)
+        macd = ta.trend.MACD(close=kapanis)
+        df['MACD'] = macd.macd()
+        df['MACD_Signal'] = macd.macd_signal()
+        
         df['Hacim_Ort'] = hacim.rolling(window=20).mean()
         df.dropna(inplace=True)
         return df
@@ -188,13 +194,14 @@ class Backtester:
     @staticmethod
     def vektor_gercekci_test(df):
         if df is None or len(df) < 50: return 0
-        alis_sinyalleri = (df['Close'] < df['SMA_200']) & (df['RSI'] < 40)
+        # Artık backtest de MACD onayını arıyor
+        alis_sinyalleri = (df['Close'] < df['SMA_200']) & (df['RSI'] < 40) & (df['MACD'] > df['MACD_Signal'])
         df['Sinyal'] = np.where(alis_sinyalleri, 1, 0)
         df['Gelecek_Getiri'] = df['Close'].shift(-20) / df['Close'] - 1
         basarili_islemler = df[df['Sinyal'] == 1]['Gelecek_Getiri'] > 0
         return round(basarili_islemler.mean() * 100 if not basarili_islemler.empty else 50.0, 1)
 
-# --- 5. STRATEJİ MOTORU (RİSK KONTROLLÜ) ---
+# --- 5. STRATEJİ MOTORU (DÜŞEN BIÇAK KORUMALI) ---
 class QuantStrategy:
     def __init__(self, config):
         self.config = config
@@ -209,32 +216,43 @@ class QuantStrategy:
         win_rate = Backtester.vektor_gercekci_test(gunluk)
         son_gun = gunluk.iloc[-1]
         fiyat, rsi, atr = float(son_gun['Close']), float(son_gun['RSI']), float(son_gun['ATR'])
-        sma_200, bb_lower, hacim, hacim_ort = float(son_gun['SMA_200']), float(son_gun['BB_Lower']), float(son_gun['Volume']), float(son_gun['Hacim_Ort'])
+        sma_200, bb_lower = float(son_gun['SMA_200']), float(son_gun['BB_Lower'])
+        mac_deger, mac_signal = float(son_gun['MACD']), float(son_gun['MACD_Signal'])
+        hacim, hacim_ort = float(son_gun['Volume']), float(son_gun['Hacim_Ort'])
         
-        # --- LİKİDİTE FİLTRESİ ---
-        if hacim < hacim_ort * 0.5: return None  # Çok sığ tahtaları direkt ele
-        
+        # --- 🛡️ 1. DÜŞEN BIÇAK (VALUE TRAP) KESİN FİLTRESİ ---
+        # Eğer MACD hala sinyalin altındaysa (aşağı süzülüyorsa) veya hacim ortalamanın yarısından da azsa,
+        # bu hisse düşen bıçaktır, asla AL sinyali üretemez!
+        if mac_deger < mac_signal:
+            return None # Doğrudan eler, listeye bile sokmaz!
+            
+        if hacim < hacim_ort * 0.6:
+            return None # Hacimsiz, ölü düşüşleri eler.
+
         skor, nedenler = 0, []
         if fiyat < sma_200:
             fark = ((sma_200 - fiyat) / sma_200) * 100
             if fark > 15: skor += 40; nedenler.append(f"SMA200 altı %{int(fark)} İskonto")
             elif fark > 5: skor += 20; nedenler.append("Kısmi İskonto")
-        if rsi < 35: skor += 30; nedenler.append(f"Aşırı Satım (RSI: {int(rsi)})")
-        if fiyat <= bb_lower * 1.02: skor += 15; nedenler.append("Bollinger Dip")
         
-        xu100 = DataFetcher.endeks_verisi_getir()
-        if xu100 is not None and len(gunluk) >= 60 and len(xu100) >= 60:
-            if ((fiyat / gunluk['Close'].iloc[-60]) - 1) > ((xu100['Close'].iloc[-1] / xu100['Close'].iloc[-60]) - 1):
-                skor += 15; nedenler.append("Endeksten Ayrışma")
+        if rsi < 40: skor += 30; nedenler.append(f"Sağlıklı Dip (RSI: {int(rsi)})")
+        if fiyat <= bb_lower * 1.02: skor += 15; nedenler.append("Bollinger Dip Tepkisi")
+        
+        # MACD yukarı kestiği için ekstra güven puanı
+        if mac_deger > mac_signal:
+            skor += 15
+            nedenler.append("MACD Alım Onayı ✅")
 
         if rsi > self.config.rsi_asiri_alim: skor -= 40
         if fiyat > sma_200 * 1.20: skor -= 30
                 
         skor = max(0, min(skor, 100))
+        
+        # Puan düşükse çöpe at
+        if skor < 60: return None
+
         if skor >= 80: karar = "🔥 KESİN TOPLA"
-        elif skor >= 60: karar = "🟢 KADEMELİ AL"
-        elif skor <= 30: karar = "🔴 UZAK DUR"
-        else: karar = "⚪ NÖTR"
+        else: karar = "🟢 KADEMELİ AL"
             
         # --- RİSK YÖNETİMİ SEVİYELERİ ---
         stop_loss = round(fiyat - (atr * self.config.atr_stop_carpan), 2)
@@ -244,7 +262,7 @@ class QuantStrategy:
         return {
             "Hisse": hisse_kodu.replace(".IS", ""), "Karar": karar, "Skor": f"%{skor}",
             "Kaynak": kaynak, "Fiyat": round(fiyat, 2), "Stop Loss": stop_loss, "Hedef Fiyat": hedef_fiyat,
-            "Win Rate": f"%{win_rate}", "Fırsat Özeti": " | ".join(nedenler[:3]) if nedenler else "Yatay",
+            "Win Rate": f"%{win_rate}", "Fırsat Özeti": " | ".join(nedenler[:3]) if nedenler else "Trend Dönüşü",
             "Grafik_Verisi": gunluk[['Open', 'High', 'Low', 'Close', 'SMA_50', 'SMA_200']].tail(90)
         }
 
@@ -254,7 +272,6 @@ def cizgi_grafik_olustur(df, hisse, stop_seviyesi, hedef_seviyesi):
     if 'SMA_50' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='#29b6f6', width=1.5), name='SMA 50'))
     if 'SMA_200' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_200'], line=dict(color='#ffa726', width=2), name='SMA 200'))
     
-    # Risk Çizgileri
     fig.add_hline(y=stop_seviyesi, line_dash="dash", line_color="#ff5252", annotation_text="Stop-Loss", annotation_position="bottom right")
     fig.add_hline(y=hedef_seviyesi, line_dash="dash", line_color="#69f0ae", annotation_text="Hedef Fiyat", annotation_position="top right")
     
@@ -263,8 +280,8 @@ def cizgi_grafik_olustur(df, hisse, stop_seviyesi, hedef_seviyesi):
 
 # --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("🎯 Hibrit Quant & İstihbarat Botu v11.1 (Risk Optimizasyonlu)")
-    st.markdown("Katılım Endeksi üzerinde matematiksel analiz yapar. Her sinyal için **Stop-Loss** ve **Hedef Fiyat** üretir.")
+    st.title("🎯 Hibrit Quant & İstihbarat Botu v11.2 (Düşen Bıçak Korumalı)")
+    st.markdown("Katılım Endeksi üzerinde çalışır. **MACD ve Hacim onayı olmayan** hiçbir düşen hisseye AL sinyali üretmez.")
     st.markdown("---")
 
     st.sidebar.markdown("### 🏦 Portföy & Risk Parametreleri")
@@ -277,10 +294,10 @@ def ui_olustur():
 
     piyasa_durumu = DataFetcher.piyasa_rejimi_kontrol()
     if piyasa_durumu == "BULL": st.sidebar.success("📊 BIST Genel Trendi: BOĞA")
-    else: st.sidebar.warning("⚠️ BIST Genel Trendi: AYI (Toplama Fırsatı)")
+    else: st.sidebar.warning("⚠️ BIST Genel Trendi: AYI (Seçici Toplama)")
 
     st.sidebar.markdown("### 🔍 Özel İzleme Listesi")
-    hisseler_metin = st.sidebar.text_area("Hızlı Tarama:", "MPARK\nBIMAS\nASELS\nLOGO", height=120)
+    hisseler_metin = st.sidebar.text_area("Hızlı Tarama:", "MPARK\nBIMAS\nASELS\nTKNSA", height=120)
 
     # --- HIZLI TARAMA BÖLÜMÜ ---
     if st.sidebar.button("🚀 Listeyi Tara", use_container_width=True):
@@ -298,27 +315,28 @@ def ui_olustur():
             def tablo_renk(val):
                 if "🔥" in str(val): return 'background-color: #1e4620; color: white;'
                 elif "🟢" in str(val): return 'background-color: #388e3c; color: white;'
-                elif "🔴" in str(val): return 'background-color: #b71c1c; color: white;'
                 return ''
-            st.markdown("### 📋 Hızlı Tarama Sonuçları")
+            st.markdown("### 📋 Hızlı Tarama Sonuçları (Filtrelenmiş)")
             st.dataframe(df.style.map(tablo_renk, subset=['Karar']), use_container_width=True)
+        else:
+            st.warning("Seçilen hisseler düşen bıçak filtresine takıldı veya kriterleri karşılamadı (Nakit kraldır).")
 
     # --- ANA RADAR: KATILIM ENDEKSİ VE İSTİHBARAT ---
-    st.markdown("### 📡 Katılım Endeksi Fırsat Radarı (105 Hisse)")
-    if st.button("🔍 Katılım Listesinde Dipteki Hisseleri Bul ve İstihbarat Topla", use_container_width=True):
-        st.info("Algoritma devrede. Katılım Listesi sessizce taranıyor...")
+    st.markdown("### 📡 Katılım Endeksi Güvenli Fırsat Radarı")
+    if st.button("🔍 Katılım Listesini Tara (Düşen Bıçakları Ele)", use_container_width=True):
+        st.info("Algoritma devrede. Ölü düşüşler ve MACD onayı almayanlar filtreleniyor...")
         ilerleme_radar = st.progress(0)
         bulunan_firsatlar = []
         
         with ThreadPoolExecutor(max_workers=5) as executor:
             for idx, sonuc in enumerate(executor.map(strateji.analiz_et, KATILIM_LISTESI)):
-                if sonuc and ("🔥" in sonuc["Karar"] or "🟢" in sonuc["Karar"]):
+                if sonuc:
                     bulunan_firsatlar.append(sonuc)
                 ilerleme_radar.progress((idx + 1) / len(KATILIM_LISTESI))
         ilerleme_radar.empty()
         
         if bulunan_firsatlar:
-            st.success(f"🚨 Tarama Tamamlandı! Risk kontrollü toplanabilecek {len(bulunan_firsatlar)} fırsat bulundu.")
+            st.success(f"🚨 Tarama Tamamlandı! Düşen bıçaklar elendi, gerçek dönüş sinyali alan {len(bulunan_firsatlar)} hisse bulundu.")
             sutunlar = st.columns(min(len(bulunan_firsatlar), 3))
             
             for idx, firsat in enumerate(bulunan_firsatlar):
@@ -328,7 +346,7 @@ def ui_olustur():
                     html_kart = f"""<div style="border: 2px solid #2e7d32; border-radius: 10px; padding: 15px; background-color: {arkaplan}; color: white;">
 <h2 style="text-align: center; color: #a5d6a7; margin-bottom:0;">{firsat['Hisse']}</h2>
 <h1 style="text-align: center; margin-top:0;">{firsat['Skor']}</h1>
-<div style="text-align:center; margin-bottom:10px;"><span style="background-color: #198754; padding: 3px 8px; border-radius: 8px; font-size: 12px; font-weight: bold;">✅ Katılım Endeksi</span></div>
+<div style="text-align:center; margin-bottom:10px;"><span style="background-color: #198754; padding: 3px 8px; border-radius: 8px; font-size: 12px; font-weight: bold;">🛡️ Güvenli Süzgeç</span></div>
 <p style="text-align: center; font-size: 13px;"><b>{firsat['Fırsat Özeti']}</b></p>
 <hr style="border-color: #4caf50;">
 <p style="font-size: 13px; margin:2px 0;"><b>Giriş Fiyatı:</b> {firsat['Fiyat']} ₺</p>
@@ -343,7 +361,7 @@ def ui_olustur():
                         st.plotly_chart(cizgi_grafik_olustur(firsat['Grafik_Verisi'], firsat['Hisse'], firsat['Stop Loss'], firsat['Hedef Fiyat']), use_container_width=True, config={'displayModeBar': False})
                     
                     # İSTİHBARAT KISMI (WEB SCRAPING)
-                    with st.expander("🕵️‍♂️ KAP ve Haber İstihbaratı", expanded=True):
+                    with st.expander("🕵️‍♂️ KAP and Haber İstihbaratı", expanded=True):
                         hisse = firsat['Hisse']
                         
                         kap_verileri = haberleri_kazi(f"{hisse} kap haberi", 2)
@@ -367,7 +385,7 @@ def ui_olustur():
                         else: st.caption("Medyada güncel haber bulunamadı.")
                     st.markdown("<br>", unsafe_allow_html=True)
         else:
-            st.warning("Şu an için risk/ödül kriterlerine uyan, likit ve dip bölgede bir katılım hissesi bulunamadı.")
+            st.warning("Piyasada şu an Düşen Bıçak filtresini geçebilen, yani MACD onayı ve hacim desteği alan temiz bir hisse bulunamadı. Nakitte beklemek en büyük kazançtır.")
 
 if __name__ == "__main__":
     ui_olustur()
