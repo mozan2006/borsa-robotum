@@ -16,7 +16,7 @@ warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v11.4 - Çift Motorlu", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="Ultimate Quant Bot v11.5 - Nihai Risk Kalkanı", page_icon="🛡️", layout="wide")
 
 # --- CSS VE TASARIM ---
 st.markdown("""
@@ -42,7 +42,6 @@ def sifre_kontrol():
                 girilen_sifre = st.text_input("Erişim Şifresi:", type="password")
                 submit_button = st.form_submit_button("Giriş Yap", use_container_width=True)
                 if submit_button:
-                    # Şifreyi kendi sisteminize göre değiştirebilirsiniz
                     try:
                         dogru_sifre = st.secrets["sistem_sifresi"]
                     except:
@@ -63,12 +62,12 @@ if st.sidebar.button("🚪 Çıkış Yap", use_container_width=True):
 
 # --- 1. YAPILANDIRMA VE LİSTELER ---
 class BotConfig:
-    def __init__(self, sermaye, atr_stop_carpan, risk_odul_orani):
+    def __init__(self, sermaye, atr_stop_carpan, risk_odul_orani, kara_liste):
         self.sermaye = sermaye
         self.atr_stop_carpan = atr_stop_carpan
         self.risk_odul_orani = risk_odul_orani
+        self.kara_liste = kara_liste
 
-# 240 Hisselik Tam Katılım Endeksi Listesi
 KATILIM_LISTESI = [
     'AAGYO', 'ACSEL', 'AHGAZ', 'AHSGY', 'AKFYE', 'AKHAN', 'ALBRK', 'ALCTL', 'ALFAS', 
     'ALKA', 'ALKIM', 'ALKLC', 'ALTNY', 'ALVES', 'ANGEN', 'ARASE', 'ARDYZ', 'ARENA', 
@@ -159,6 +158,16 @@ class DataFetcher:
         if veri is not None: return veri, "Yedek API (Yahoo)"
         return None, "Bağlantı Hatası"
 
+    @staticmethod
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def piyasa_rejimi_kontrol():
+        veri = DataFetcher.is_yatirim_api_sorgula("XU100", 365)
+        if veri is None: veri = DataFetcher.yfinance_api_sorgula("XU100.IS")
+        if veri is not None and not veri.empty and len(veri) > 200:
+            sma_200 = ta.trend.SMAIndicator(close=veri['Close'], window=200).sma_indicator()
+            return "BULL" if veri['Close'].iloc[-1] > sma_200.iloc[-1] else "BEAR"
+        return "BULL"
+
 # --- 4. TEKNİK ANALİZ VE GÖSTERGELER ---
 class QuantModel:
     @staticmethod
@@ -168,7 +177,6 @@ class QuantModel:
         df['SMA_50'] = ta.trend.SMAIndicator(close=kapanis, window=50).sma_indicator()
         df['SMA_200'] = ta.trend.SMAIndicator(close=kapanis, window=200).sma_indicator()
         
-        # Bollinger Bantları
         bb = ta.volatility.BollingerBands(close=kapanis, window=20, window_dev=2)
         df['BB_Lower'] = bb.bollinger_lband()
         df['BB_Upper'] = bb.bollinger_hband()
@@ -178,17 +186,27 @@ class QuantModel:
         macd = ta.trend.MACD(close=kapanis)
         df['MACD'] = macd.macd()
         df['MACD_Signal'] = macd.macd_signal()
-        df['Hacim_Ort'] = hacim.rolling(window=20).mean()
         
+        # Trend Gücü (ADX) - Sahte Kırılım Koruması
+        adx_ind = ta.trend.ADXIndicator(high=yuksek, low=dusuk, close=kapanis)
+        df['ADX'] = adx_ind.adx()
+        
+        df['Hacim_Ort'] = hacim.rolling(window=20).mean()
         df.dropna(inplace=True)
         return df
 
-# --- 5. STRATEJİ MOTORU (ÇİFT MOTOR: DİP VE MOMENTUM) ---
+# --- 5. STRATEJİ MOTORU (RİSK KALKANLI) ---
 class QuantStrategy:
-    def __init__(self, config):
+    def __init__(self, config, piyasa_rejimi):
         self.config = config
+        self.piyasa_rejimi = piyasa_rejimi
 
     def analiz_et(self, hisse_kodu):
+        # 1. KALKAN: KARA LİSTE KONTROLÜ
+        temiz_kod = hisse_kodu.replace(".IS", "")
+        if temiz_kod in self.config.kara_liste:
+            return None # Kara listedeki hisseler kapıdan içeri giremez
+
         gunluk, kaynak = DataFetcher.veri_indir(hisse_kodu)
         if gunluk is None: return None
             
@@ -201,11 +219,14 @@ class QuantStrategy:
         bb_lower, bb_upper = float(son_gun['BB_Lower']), float(son_gun['BB_Upper'])
         mac_deger, mac_signal = float(son_gun['MACD']), float(son_gun['MACD_Signal'])
         hacim, hacim_ort = float(son_gun['Volume']), float(son_gun['Hacim_Ort'])
+        adx_deger = float(son_gun['ADX'])
         
-        # Likidite Koruması
-        if hacim < hacim_ort * 0.5: return None
+        # 2. KALKAN: HACİM ŞOKU KONTROLÜ (Brüt Takas / Ceza Engelleyici)
+        # Hacim ortalamanın %35'inin altındaysa tahta donmuştur, risklidir.
+        if hacim < hacim_ort * 0.35: 
+            return None 
 
-        # --- MOTOR 1: GÜVENLİ DİP AVCISI ---
+        # --- MOTOR 1: GÜVENLİ DİP AVCISI (Değer) ---
         dip_skor = 0
         dip_nedenler = []
         if mac_deger > mac_signal and fiyat < sma_200 * 1.05:
@@ -214,14 +235,17 @@ class QuantStrategy:
             if fiyat <= bb_lower * 1.03: dip_skor += 20; dip_nedenler.append("Bollinger Dip Tepkisi")
             if hacim > hacim_ort: dip_skor += 15; dip_nedenler.append("Hacimli Dönüş")
 
-        # --- MOTOR 2: MOMENTUM ROKETİ ---
+        # --- MOTOR 2: MOMENTUM ROKETİ (Trend) ---
         mom_skor = 0
         mom_nedenler = []
-        if fiyat > sma_50 and sma_50 > sma_200 and mac_deger > 0 and mac_deger > mac_signal:
-            if rsi > 65 and rsi < 85: mom_skor += 30; mom_nedenler.append(f"Güçlü Trend (RSI: {int(rsi)})")
+        # 3. KALKAN: ADX KONTROLÜ (Trend gücü 20'nin altındaysa yatay piyasadır, sahte kırılımdır)
+        if fiyat > sma_50 and sma_50 > sma_200 and mac_deger > 0 and mac_deger > mac_signal and adx_deger > 20:
+            if rsi > 65 and rsi < 85: mom_skor += 30; mom_nedenler.append(f"Güçlü Trend (ADX: {int(adx_deger)})")
             if fiyat >= bb_upper * 0.98: mom_skor += 30; mom_nedenler.append("Bollinger Üst Bant Kırılımı 🚀")
             if hacim > hacim_ort * 1.3: mom_skor += 25; mom_nedenler.append("Hacim Patlaması")
-            if rsi > 85: mom_skor -= 20; mom_nedenler.append("Aşırı Şişmiş Uyarısı")
+            
+            # 4. KALKAN: ENDEKS ŞALTERİ ETKİSİ
+            if self.piyasa_rejimi == "BEAR": mom_skor -= 20; mom_nedenler.append("Ayı Piyasası İskontosu")
 
         # --- HAKEM ---
         nihai_skor = 0
@@ -233,14 +257,14 @@ class QuantStrategy:
         if mom_skor >= 70 and mom_skor >= dip_skor:
             nihai_skor = mom_skor
             karar_metni = "🚀 MOMENTUM RALLİSİ"
-            strateji_tipi = "Momentum/Breakout"
+            strateji_tipi = "Momentum"
             ozet = " | ".join(mom_nedenler[:3])
             tema_renk = "#004d40"
             
         elif dip_skor >= 70:
             nihai_skor = dip_skor
             karar_metni = "🔥 GÜVENLİ DİP"
-            strateji_tipi = "Reversal/Değer"
+            strateji_tipi = "Reversal"
             ozet = " | ".join(dip_nedenler[:3])
             tema_renk = "#1e4620"
             
@@ -253,7 +277,7 @@ class QuantStrategy:
         hedef_fiyat = round(fiyat + (risk_mesafesi * self.config.risk_odul_orani), 2)
             
         return {
-            "Hisse": hisse_kodu.replace(".IS", ""), "Karar": karar_metni, "Skor": f"%{min(nihai_skor, 100)}",
+            "Hisse": temiz_kod, "Karar": karar_metni, "Skor": f"%{min(nihai_skor, 100)}",
             "Tip": strateji_tipi, "Renk": tema_renk,
             "Kaynak": kaynak, "Fiyat": round(fiyat, 2), "Stop Loss": stop_loss, "Hedef Fiyat": hedef_fiyat,
             "Fırsat Özeti": ozet,
@@ -276,9 +300,11 @@ def cizgi_grafik_olustur(df, hisse, stop_seviyesi, hedef_seviyesi):
 
 # --- 6. ARAYÜZ (UI) VE ÇİFT RADAR ---
 def ui_olustur():
-    st.title("🎯 Hibrit Quant Bot v11.4 (Çift Motor & Çift Radar)")
-    st.markdown("Algoritma hem dipten dönüş yapan iskontolu hisseleri (Değer), hem de direnç kırmış hacimli ralli hisselerini (Momentum) avlar.")
+    st.title("🛡️ Hibrit Quant Bot v11.5 (Nihai Risk Kalkanı)")
+    st.markdown("Brüt Takas, Düşen Bıçak ve Sahte Kırılım (Fakeout) tuzaklarına karşı ADX ve Hacim korumaları aktiftir.")
     st.markdown("---")
+
+    piyasa_durumu = DataFetcher.piyasa_rejimi_kontrol()
 
     # SOL MENÜ - AYARLAR
     st.sidebar.markdown("### 🏦 Portföy & Risk Parametreleri")
@@ -286,23 +312,28 @@ def ui_olustur():
     atr_carpan = st.sidebar.slider("Stop-Loss ATR Çarpanı", min_value=1.0, max_value=3.0, value=1.5, step=0.25)
     risk_odul = st.sidebar.slider("Risk / Ödül Oranı", min_value=1.5, max_value=4.0, value=2.0, step=0.5)
     
-    config = BotConfig(sermaye=toplam_sermaye, atr_stop_carpan=atr_carpan, risk_odul_orani=risk_odul)
-    strateji = QuantStrategy(config)
+    st.sidebar.markdown("### 🚫 Kara Liste (Blacklist)")
+    kara_liste_metin = st.sidebar.text_area("Cezalı Hisseleri Buraya Yazın:", "COSMO\nGLRMK\nYYAPI", height=80)
+    kara_liste = [h.strip().upper() for h in kara_liste_metin.split("\n") if h.strip()]
+
+    config = BotConfig(sermaye=toplam_sermaye, atr_stop_carpan=atr_carpan, risk_odul_orani=risk_odul, kara_liste=kara_liste)
+    strateji = QuantStrategy(config, piyasa_durumu)
+
+    if piyasa_durumu == "BULL": st.sidebar.success("📊 BIST Genel Trendi: BOĞA (Risk Alınabilir)")
+    else: st.sidebar.warning("⚠️ BIST Genel Trendi: AYI (Savunma Modu Aktif)")
 
     # SOL MENÜ - HIZLI TARAMA BÖLÜMÜ
     st.sidebar.markdown("### 🔍 Hızlı Radar Testi")
-    hisseler_metin = st.sidebar.text_area("Manuel Hisse Girin:", "GUNDG\nOZATD\nASELS\nTKNSA", height=120)
+    hisseler_metin = st.sidebar.text_area("Manuel Hisse Girin:", "GUNDG\nOZATD\nASELS\nCOSMO", height=120)
     
-    # 1. BUTON: HIZLI TARAMA
     hizli_tarama_butonu = st.sidebar.button("🚀 Sadece Bunları Tara", use_container_width=True)
 
     # ANA EKRAN - GENEL TARAMA BÖLÜMÜ
     st.markdown("### 📡 Tüm Katılım Endeksi Radarı")
     
-    # 2. BUTON: TÜM LİSTEYİ TARAMA
     ana_tarama_butonu = st.button("🔍 Tüm Listeyi (Katılım Endeksi) Tara", use_container_width=True)
 
-    # --- HANGİ BUTONA BASILDIYSA ONA GÖRE İŞLEM YAP ---
+    # --- TARAMA İŞLEMİ ---
     if hizli_tarama_butonu or ana_tarama_butonu:
         
         if hizli_tarama_butonu:
@@ -310,25 +341,22 @@ def ui_olustur():
             st.info(f"Hızlı Motor Aktif: Yalnızca girdiğiniz {len(hisse_listesi)} hisse taranıyor...")
         else:
             hisse_listesi = KATILIM_LISTESI
-            st.info(f"Derin Tarama Aktif: Listedeki tüm hisseler taranıyor. Bu işlem hız kesici devrede olduğu için yaklaşık 1-2 dakika sürebilir...")
+            st.info(f"Derin Tarama Aktif: Kara Liste ({len(kara_liste)} hisse) hariç tutularak tüm piyasa taranıyor. (Süre: ~2 Dk)")
             
         ilerleme_radar = st.progress(0)
         bulunan_firsatlar = []
         
-        # GÜNCELLEME: Sunucu ban riski için max_workers 2'ye düşürüldü
+        # Sunucu ban riski için max_workers 2, sleep 0.5
         with ThreadPoolExecutor(max_workers=2) as executor:
             for idx, sonuc in enumerate(executor.map(strateji.analiz_et, hisse_listesi)):
                 if sonuc:
                     bulunan_firsatlar.append(sonuc)
-                
-                # GÜNCELLEME: Sunucu ban riski için istek aralarına bekleme eklendi
                 time.sleep(0.5)
-                
                 ilerleme_radar.progress((idx + 1) / len(hisse_listesi))
         ilerleme_radar.empty()
         
         if bulunan_firsatlar:
-            st.success(f"🚨 Tarama Tamamlandı! Kriterleri sağlayan {len(bulunan_firsatlar)} fırsat bulundu.")
+            st.success(f"🚨 Tarama Tamamlandı! Risk kalkanını geçebilen {len(bulunan_firsatlar)} fırsat bulundu.")
             sutunlar = st.columns(min(len(bulunan_firsatlar), 3))
             
             for idx, firsat in enumerate(bulunan_firsatlar):
@@ -356,7 +384,7 @@ def ui_olustur():
                                 st.markdown(f"[{kap['zaman']}] <a href='{kap['link']}' target='_blank' style='color:#29b6f6;'>{kap['baslik']}</a>", unsafe_allow_html=True)
                         else: st.caption("Haber yok.")
         else:
-            st.warning("Bu listede ne bir dip dönüşü (Değer), ne de bir ralli başlangıcı (Momentum) tespit edilemedi. Kriterler karşılanmıyor.")
+            st.warning("Piyasada şu an Risk Kalkanını (Hacim Şoku, ADX Gücü, MACD) geçebilen temiz bir fırsat bulunamadı. Nakit kraldır.")
 
 if __name__ == "__main__":
     ui_olustur()
