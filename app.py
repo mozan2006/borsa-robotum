@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import ta
+import time
 import warnings
 import logging
 import requests
@@ -167,7 +168,7 @@ class QuantModel:
         df['SMA_50'] = ta.trend.SMAIndicator(close=kapanis, window=50).sma_indicator()
         df['SMA_200'] = ta.trend.SMAIndicator(close=kapanis, window=200).sma_indicator()
         
-        # Bollinger Bantları (Alt = Dip için, Üst = Momentum/Ralli için)
+        # Bollinger Bantları
         bb = ta.volatility.BollingerBands(close=kapanis, window=20, window_dev=2)
         df['BB_Lower'] = bb.bollinger_lband()
         df['BB_Upper'] = bb.bollinger_hband()
@@ -201,30 +202,28 @@ class QuantStrategy:
         mac_deger, mac_signal = float(son_gun['MACD']), float(son_gun['MACD_Signal'])
         hacim, hacim_ort = float(son_gun['Volume']), float(son_gun['Hacim_Ort'])
         
-        # Likidite Koruması (Ölü tahtaları ele)
+        # Likidite Koruması
         if hacim < hacim_ort * 0.5: return None
 
-        # --- MOTOR 1: GÜVENLİ DİP AVCISI (Değer/Reversal) ---
+        # --- MOTOR 1: GÜVENLİ DİP AVCISI ---
         dip_skor = 0
         dip_nedenler = []
-        # MACD onayı yoksa dip skoru hesaplanmaz (Düşen bıçak engeli)
         if mac_deger > mac_signal and fiyat < sma_200 * 1.05:
             if fiyat < sma_200: dip_skor += 35; dip_nedenler.append("SMA200 İskontosu")
             if rsi < 45: dip_skor += 30; dip_nedenler.append(f"Dip RSI ({int(rsi)})")
             if fiyat <= bb_lower * 1.03: dip_skor += 20; dip_nedenler.append("Bollinger Dip Tepkisi")
             if hacim > hacim_ort: dip_skor += 15; dip_nedenler.append("Hacimli Dönüş")
 
-        # --- MOTOR 2: MOMENTUM ROKETİ (Trend Takipçisi) ---
+        # --- MOTOR 2: MOMENTUM ROKETİ ---
         mom_skor = 0
         mom_nedenler = []
-        # Fiyat hareketli ortalamaların üzerinde olmalı ve MACD pozitif bölgede olmalı
         if fiyat > sma_50 and sma_50 > sma_200 and mac_deger > 0 and mac_deger > mac_signal:
             if rsi > 65 and rsi < 85: mom_skor += 30; mom_nedenler.append(f"Güçlü Trend (RSI: {int(rsi)})")
             if fiyat >= bb_upper * 0.98: mom_skor += 30; mom_nedenler.append("Bollinger Üst Bant Kırılımı 🚀")
             if hacim > hacim_ort * 1.3: mom_skor += 25; mom_nedenler.append("Hacim Patlaması")
-            if rsi > 85: mom_skor -= 20; mom_nedenler.append("Aşırı Şişmiş Uyarısı") # Çok fırlamışsa puan kır
+            if rsi > 85: mom_skor -= 20; mom_nedenler.append("Aşırı Şişmiş Uyarısı")
 
-        # --- HAKEM: HANGİ MOTOR KAZANDI? ---
+        # --- HAKEM ---
         nihai_skor = 0
         karar_metni = ""
         strateji_tipi = ""
@@ -236,19 +235,19 @@ class QuantStrategy:
             karar_metni = "🚀 MOMENTUM RALLİSİ"
             strateji_tipi = "Momentum/Breakout"
             ozet = " | ".join(mom_nedenler[:3])
-            tema_renk = "#004d40" # Koyu Mavi/Yeşil (Roket)
+            tema_renk = "#004d40"
             
         elif dip_skor >= 70:
             nihai_skor = dip_skor
             karar_metni = "🔥 GÜVENLİ DİP"
             strateji_tipi = "Reversal/Değer"
             ozet = " | ".join(dip_nedenler[:3])
-            tema_renk = "#1e4620" # Klasik Yeşil
+            tema_renk = "#1e4620"
             
         else:
-            return None # İki stratejiye de uymayanlar elenir.
+            return None
 
-        # --- RİSK YÖNETİMİ SEVİYELERİ ---
+        # --- RİSK YÖNETİMİ ---
         stop_loss = round(fiyat - (atr * self.config.atr_stop_carpan), 2)
         risk_mesafesi = fiyat - stop_loss
         hedef_fiyat = round(fiyat + (risk_mesafesi * self.config.risk_odul_orani), 2)
@@ -267,7 +266,6 @@ def cizgi_grafik_olustur(df, hisse, stop_seviyesi, hedef_seviyesi):
     if 'SMA_50' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='#29b6f6', width=1.5), name='SMA 50'))
     if 'SMA_200' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_200'], line=dict(color='#ffa726', width=2), name='SMA 200'))
     
-    # Yeni eklenen BB Bantlarını grafikte gösterme
     if 'BB_Upper' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='rgba(255,255,255,0.2)', width=1, dash='dot'), name='BB Upper'))
     
     fig.add_hline(y=stop_seviyesi, line_dash="dash", line_color="#ff5252", annotation_text="Stop-Loss")
@@ -307,23 +305,25 @@ def ui_olustur():
     # --- HANGİ BUTONA BASILDIYSA ONA GÖRE İŞLEM YAP ---
     if hizli_tarama_butonu or ana_tarama_butonu:
         
-        # Eğer sol menüdeki butona basıldıysa listeyi metin kutusundan al
         if hizli_tarama_butonu:
             hisse_listesi = [h.strip().upper() for h in hisseler_metin.split("\n") if h.strip()]
             st.info(f"Hızlı Motor Aktif: Yalnızca girdiğiniz {len(hisse_listesi)} hisse taranıyor...")
-        
-        # Eğer ana ekrandaki butona basıldıysa listeyi ana yapılandırmadan al
         else:
             hisse_listesi = KATILIM_LISTESI
-            st.info(f"Derin Tarama Aktif: Listedeki tüm hisseler taranıyor. Bu işlem 1-2 dakika sürebilir...")
+            st.info(f"Derin Tarama Aktif: Listedeki tüm hisseler taranıyor. Bu işlem hız kesici devrede olduğu için yaklaşık 1-2 dakika sürebilir...")
             
         ilerleme_radar = st.progress(0)
         bulunan_firsatlar = []
         
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        # GÜNCELLEME: Sunucu ban riski için max_workers 2'ye düşürüldü
+        with ThreadPoolExecutor(max_workers=2) as executor:
             for idx, sonuc in enumerate(executor.map(strateji.analiz_et, hisse_listesi)):
                 if sonuc:
                     bulunan_firsatlar.append(sonuc)
+                
+                # GÜNCELLEME: Sunucu ban riski için istek aralarına bekleme eklendi
+                time.sleep(0.5)
+                
                 ilerleme_radar.progress((idx + 1) / len(hisse_listesi))
         ilerleme_radar.empty()
         
