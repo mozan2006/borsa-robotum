@@ -16,7 +16,7 @@ warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Ultimate Quant Bot v11.5 - Nihai Risk Kalkanı", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Kriz İskontosu Botu - Derin Dip Avcısı", page_icon="🛡️", layout="wide")
 
 # --- CSS VE TASARIM ---
 st.markdown("""
@@ -187,7 +187,6 @@ class QuantModel:
         df['MACD'] = macd.macd()
         df['MACD_Signal'] = macd.macd_signal()
         
-        # Trend Gücü (ADX) - Sahte Kırılım Koruması
         adx_ind = ta.trend.ADXIndicator(high=yuksek, low=dusuk, close=kapanis)
         df['ADX'] = adx_ind.adx()
         
@@ -195,17 +194,15 @@ class QuantModel:
         df.dropna(inplace=True)
         return df
 
-# --- 5. STRATEJİ MOTORU (RİSK KALKANLI) ---
+# --- 5. STRATEJİ MOTORU: KRİZ İSKONTOSU ---
 class QuantStrategy:
     def __init__(self, config, piyasa_rejimi):
         self.config = config
         self.piyasa_rejimi = piyasa_rejimi
 
     def analiz_et(self, hisse_kodu):
-        # 1. KALKAN: KARA LİSTE KONTROLÜ
         temiz_kod = hisse_kodu.replace(".IS", "")
-        if temiz_kod in self.config.kara_liste:
-            return None # Kara listedeki hisseler kapıdan içeri giremez
+        if temiz_kod in self.config.kara_liste: return None 
 
         gunluk, kaynak = DataFetcher.veri_indir(hisse_kodu)
         if gunluk is None: return None
@@ -215,81 +212,50 @@ class QuantStrategy:
             
         son_gun = gunluk.iloc[-1]
         fiyat, rsi, atr = float(son_gun['Close']), float(son_gun['RSI']), float(son_gun['ATR'])
-        sma_50, sma_200 = float(son_gun['SMA_50']), float(son_gun['SMA_200'])
-        bb_lower, bb_upper = float(son_gun['BB_Lower']), float(son_gun['BB_Upper'])
+        sma_200 = float(son_gun['SMA_200'])
+        bb_lower = float(son_gun['BB_Lower'])
         mac_deger, mac_signal = float(son_gun['MACD']), float(son_gun['MACD_Signal'])
         hacim, hacim_ort = float(son_gun['Volume']), float(son_gun['Hacim_Ort'])
-        adx_deger = float(son_gun['ADX'])
         
-        # 2. KALKAN: HACİM ŞOKU KONTROLÜ (Brüt Takas / Ceza Engelleyici)
-        # Hacim ortalamanın %35'inin altındaysa tahta donmuştur, risklidir.
-        if hacim < hacim_ort * 0.35: 
-            return None 
+        # HACİM KORUMASI
+        if hacim < hacim_ort * 0.35: return None 
 
-        # --- MOTOR 1: GÜVENLİ DİP AVCISI (Değer) ---
         dip_skor = 0
         dip_nedenler = []
-        if mac_deger > mac_signal and fiyat < sma_200 * 1.05:
-            if fiyat < sma_200: dip_skor += 35; dip_nedenler.append("SMA200 İskontosu")
-            if rsi < 45: dip_skor += 30; dip_nedenler.append(f"Dip RSI ({int(rsi)})")
-            if fiyat <= bb_lower * 1.03: dip_skor += 20; dip_nedenler.append("Bollinger Dip Tepkisi")
-            if hacim > hacim_ort: dip_skor += 15; dip_nedenler.append("Hacimli Dönüş")
-
-        # --- MOTOR 2: MOMENTUM ROKETİ (Trend) ---
-        mom_skor = 0
-        mom_nedenler = []
-        # 3. KALKAN: ADX KONTROLÜ (Trend gücü 20'nin altındaysa yatay piyasadır, sahte kırılımdır)
-        if fiyat > sma_50 and sma_50 > sma_200 and mac_deger > 0 and mac_deger > mac_signal and adx_deger > 20:
-            if rsi > 65 and rsi < 85: mom_skor += 30; mom_nedenler.append(f"Güçlü Trend (ADX: {int(adx_deger)})")
-            if fiyat >= bb_upper * 0.98: mom_skor += 30; mom_nedenler.append("Bollinger Üst Bant Kırılımı 🚀")
-            if hacim > hacim_ort * 1.3: mom_skor += 25; mom_nedenler.append("Hacim Patlaması")
+        
+        # KATI DİSİPLİN: Gerçek panik satışı (RSI<30) VE Uzun vadeli iskonto (Fiyat<SMA200) ŞARTTIR.
+        if rsi < 30 and fiyat < sma_200:
+            dip_skor += 50
+            dip_nedenler.append(f"Gerçek Dip RSI ({int(rsi)})")
+            dip_nedenler.append("SMA200 İskontosu")
             
-            # 4. KALKAN: ENDEKS ŞALTERİ ETKİSİ
-            if self.piyasa_rejimi == "BEAR": mom_skor -= 20; mom_nedenler.append("Ayı Piyasası İskontosu")
+            if fiyat <= bb_lower * 1.03: 
+                dip_skor += 30
+                dip_nedenler.append("Bollinger Alt Bant Teması")
+            if mac_deger > mac_signal: 
+                dip_skor += 20
+                dip_nedenler.append("MACD Dönüş Onayı")
 
-        # --- HAKEM ---
-        nihai_skor = 0
-        karar_metni = ""
-        strateji_tipi = ""
-        ozet = ""
-        tema_renk = ""
-
-        if mom_skor >= 70 and mom_skor >= dip_skor:
-            nihai_skor = mom_skor
-            karar_metni = "🚀 MOMENTUM RALLİSİ"
-            strateji_tipi = "Momentum"
-            ozet = " | ".join(mom_nedenler[:3])
-            tema_renk = "#004d40"
-            
-        elif dip_skor >= 70:
-            nihai_skor = dip_skor
-            karar_metni = "🔥 GÜVENLİ DİP"
-            strateji_tipi = "Reversal"
-            ozet = " | ".join(dip_nedenler[:3])
-            tema_renk = "#1e4620"
-            
-        else:
-            return None
-
-        # --- RİSK YÖNETİMİ ---
-        stop_loss = round(fiyat - (atr * self.config.atr_stop_carpan), 2)
-        risk_mesafesi = fiyat - stop_loss
-        hedef_fiyat = round(fiyat + (risk_mesafesi * self.config.risk_odul_orani), 2)
-            
-        return {
-            "Hisse": temiz_kod, "Karar": karar_metni, "Skor": f"%{min(nihai_skor, 100)}",
-            "Tip": strateji_tipi, "Renk": tema_renk,
-            "Kaynak": kaynak, "Fiyat": round(fiyat, 2), "Stop Loss": stop_loss, "Hedef Fiyat": hedef_fiyat,
-            "Fırsat Özeti": ozet,
-            "Grafik_Verisi": gunluk[['Open', 'High', 'Low', 'Close', 'SMA_50', 'SMA_200', 'BB_Upper', 'BB_Lower']].tail(90)
-        }
+        # FİLTRE: Skor 80'i geçmeden asla sinyal üretme
+        if dip_skor >= 80:
+            stop_loss = round(fiyat - (atr * self.config.atr_stop_carpan), 2)
+            risk_mesafesi = fiyat - stop_loss
+            hedef_fiyat = round(fiyat + (risk_mesafesi * self.config.risk_odul_orani), 2)
+                
+            return {
+                "Hisse": temiz_kod, "Karar": "🔥 GÜVENLİ DİP", "Skor": f"%{min(dip_skor, 100)}",
+                "Tip": "Reversal", "Renk": "#1e4620",
+                "Kaynak": kaynak, "Fiyat": round(fiyat, 2), "Stop Loss": stop_loss, "Hedef Fiyat": hedef_fiyat,
+                "Fırsat Özeti": " | ".join(dip_nedenler[:3]),
+                "Grafik_Verisi": gunluk[['Open', 'High', 'Low', 'Close', 'SMA_50', 'SMA_200', 'BB_Upper', 'BB_Lower']].tail(90)
+            }
+        return None
 
 def cizgi_grafik_olustur(df, hisse, stop_seviyesi, hedef_seviyesi):
     fig = go.Figure()
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close']))
     if 'SMA_50' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='#29b6f6', width=1.5), name='SMA 50'))
     if 'SMA_200' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_200'], line=dict(color='#ffa726', width=2), name='SMA 200'))
-    
     if 'BB_Upper' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='rgba(255,255,255,0.2)', width=1, dash='dot'), name='BB Upper'))
     
     fig.add_hline(y=stop_seviyesi, line_dash="dash", line_color="#ff5252", annotation_text="Stop-Loss")
@@ -298,15 +264,14 @@ def cizgi_grafik_olustur(df, hisse, stop_seviyesi, hedef_seviyesi):
     fig.update_layout(margin=dict(l=10, r=10, t=30, b=10), height=300, xaxis_rangeslider_visible=False, template="plotly_dark", showlegend=False)
     return fig
 
-# --- 6. ARAYÜZ (UI) VE ÇİFT RADAR ---
+# --- 6. ARAYÜZ (UI) ---
 def ui_olustur():
-    st.title("🛡️ Hibrit Quant Bot v11.5 (Nihai Risk Kalkanı)")
-    st.markdown("Brüt Takas, Düşen Bıçak ve Sahte Kırılım (Fakeout) tuzaklarına karşı ADX ve Hacim korumaları aktiftir.")
+    st.title("🛡️ Kriz İskontosu Botu (Derin Dip Avcısı)")
+    st.markdown("Katı Kurallar: Sadece RSI < 30 ve SMA200 altındaki fırsatları tarar. Sahte dipleri eler.")
     st.markdown("---")
 
     piyasa_durumu = DataFetcher.piyasa_rejimi_kontrol()
 
-    # SOL MENÜ - AYARLAR
     st.sidebar.markdown("### 🏦 Portföy & Risk Parametreleri")
     toplam_sermaye = st.sidebar.number_input("Yönetilen Bakiye (₺)", min_value=10000, value=100000)
     atr_carpan = st.sidebar.slider("Stop-Loss ATR Çarpanı", min_value=1.0, max_value=3.0, value=1.5, step=0.25)
@@ -319,23 +284,17 @@ def ui_olustur():
     config = BotConfig(sermaye=toplam_sermaye, atr_stop_carpan=atr_carpan, risk_odul_orani=risk_odul, kara_liste=kara_liste)
     strateji = QuantStrategy(config, piyasa_durumu)
 
-    if piyasa_durumu == "BULL": st.sidebar.success("📊 BIST Genel Trendi: BOĞA (Risk Alınabilir)")
-    else: st.sidebar.warning("⚠️ BIST Genel Trendi: AYI (Savunma Modu Aktif)")
+    if piyasa_durumu == "BULL": st.sidebar.success("📊 BIST Genel Trendi: BOĞA")
+    else: st.sidebar.warning("⚠️ BIST Genel Trendi: AYI")
 
-    # SOL MENÜ - HIZLI TARAMA BÖLÜMÜ
     st.sidebar.markdown("### 🔍 Hızlı Radar Testi")
     hisseler_metin = st.sidebar.text_area("Manuel Hisse Girin:", "GUNDG\nOZATD\nASELS\nCOSMO", height=120)
-    
     hizli_tarama_butonu = st.sidebar.button("🚀 Sadece Bunları Tara", use_container_width=True)
 
-    # ANA EKRAN - GENEL TARAMA BÖLÜMÜ
     st.markdown("### 📡 Tüm Katılım Endeksi Radarı")
-    
     ana_tarama_butonu = st.button("🔍 Tüm Listeyi (Katılım Endeksi) Tara", use_container_width=True)
 
-    # --- TARAMA İŞLEMİ ---
     if hizli_tarama_butonu or ana_tarama_butonu:
-        
         if hizli_tarama_butonu:
             hisse_listesi = [h.strip().upper() for h in hisseler_metin.split("\n") if h.strip()]
             st.info(f"Hızlı Motor Aktif: Yalnızca girdiğiniz {len(hisse_listesi)} hisse taranıyor...")
@@ -346,7 +305,6 @@ def ui_olustur():
         ilerleme_radar = st.progress(0)
         bulunan_firsatlar = []
         
-        # Sunucu ban riski için max_workers 2, sleep 0.5
         with ThreadPoolExecutor(max_workers=2) as executor:
             for idx, sonuc in enumerate(executor.map(strateji.analiz_et, hisse_listesi)):
                 if sonuc:
@@ -384,7 +342,7 @@ def ui_olustur():
                                 st.markdown(f"[{kap['zaman']}] <a href='{kap['link']}' target='_blank' style='color:#29b6f6;'>{kap['baslik']}</a>", unsafe_allow_html=True)
                         else: st.caption("Haber yok.")
         else:
-            st.warning("Piyasada şu an Risk Kalkanını (Hacim Şoku, ADX Gücü, MACD) geçebilen temiz bir fırsat bulunamadı. Nakit kraldır.")
+            st.warning("Piyasada şu an Risk Kalkanını (RSI < 30) geçebilen temiz bir dip fırsatı bulunamadı. Nakit kraldır.")
 
 if __name__ == "__main__":
     ui_olustur()
